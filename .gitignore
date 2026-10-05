@@ -1,0 +1,17 @@
+# 构建产物与本地状态
+build/
+app/build/
+.gradle/
+.kotlin/
+local.properties
+*.apk
+*.aab
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# 探针与日志
+scratch/
+*.log

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+：禁止云端备份与设备到设备迁移带走 vault 数据（隔离要求的一部分） -->
+<dataExtractionRules>
+    <cloud-backup disableIfNoEncryptionCapabilities="true">
+        <exclude domain="file" path="vault" />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="vault.db" />
+        <exclude domain="sharedpref" path="vault_prefs.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="vault" />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="vault.db" />
+        <exclude domain="sharedpref" path="vault_prefs.xml" />
+    </device-transfer>
+</dataExtractionRules>

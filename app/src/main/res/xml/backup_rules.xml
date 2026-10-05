@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 6–11 的自动备份规则。Manifest 已设置 allowBackup="false"，
+     该文件在 allowBackup=false 时不会被读取，保留它是为了防止后续误开启备份。 -->
+<full-backup-content>
+    <exclude domain="file" path="vault" />
+    <exclude domain="database" path="vault.db" />
+    <exclude domain="sharedpref" path="vault_prefs.xml" />
+</full-backup-content>

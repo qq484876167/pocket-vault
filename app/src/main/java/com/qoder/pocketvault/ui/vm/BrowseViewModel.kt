@@ -1,0 +1,335 @@
+package com.qoder.pocketvault.ui.vm
+
+import android.net.Uri
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.qoder.pocketvault.AppGraph
+import com.qoder.pocketvault.core.FileKind
+import com.qoder.pocketvault.core.VaultPaths
+import com.qoder.pocketvault.core.breadcrumbOf
+import com.qoder.pocketvault.data.StorageReport
+import com.qoder.pocketvault.data.VaultRepository
+import com.qoder.pocketvault.data.db.ListOptions
+import com.qoder.pocketvault.data.db.ROOT_ID
+import com.qoder.pocketvault.data.db.VaultEntry
+import com.qoder.pocketvault.data.userMessage
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+enum class ViewMode { LIST, GRID }
+
+/**
+ * 列表/网格页面共用的选择态与批量操作。子类只负责“当前看哪一批条目、默认落在哪个目录”。
+ */
+abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
+
+    protected val repo: VaultRepository = graph.repo
+
+    private val _selection = MutableStateFlow<Set<Long>>(emptySet())
+    val selection: StateFlow<Set<Long>> = _selection
+
+    private val _busy = MutableStateFlow(false)
+    val busy: StateFlow<Boolean> = _busy
+
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message
+
+    private val _folderChoices = MutableStateFlow<List<String>>(listOf(""))
+    val folderChoices: StateFlow<List<String>> = _folderChoices
+
+    /** 批量操作的默认目录（移动/复制/解压/压缩产物的落点）。 */
+    abstract val currentDir: StateFlow<String>
+
+    protected open fun onSelectionCleared() {
+        _selection.value = emptySet()
+    }
+
+    fun showMessage(text: String?) {
+        if (!text.isNullOrBlank()) _message.value = text
+    }
+
+    fun consumeMessage() {
+        _message.value = null
+    }
+
+    fun toggleSelect(id: Long) {
+        _selection.update { if (id in it) it - id else it + id }
+    }
+
+    fun selectAll(ids: List<Long>) {
+        _selection.value = ids.toSet()
+    }
+
+    fun clearSelection() = onSelectionCleared()
+
+    protected fun selectedIds(): List<Long> = _selection.value.toList()
+
+    protected val hasSelection: Boolean get() = _selection.value.isNotEmpty()
+
+    /** 统一的“忙碌态 + 异常转中文提示”包装，页面只需要显示 message。 */
+    protected fun runAction(successHint: String? = null, block: suspend () -> String?) {
+        if (_busy.value) return
+        _busy.value = true
+        viewModelScope.launch {
+            val outcome = runCatching { block() }
+            _busy.value = false
+            _message.value = outcome.fold(onFailure = { error -> error.userMessage() }, onSuccess = { it })
+                ?: successHint
+            onSelectionCleared()
+            reloadFolderChoices()
+        }
+    }
+
+    fun reloadFolderChoices() {
+        viewModelScope.launch {
+            val paths = runCatching { repo.folderPaths() }.getOrDefault(emptyList())
+            _folderChoices.value = listOf("") + paths
+        }
+    }
+
+    fun newFolder(name: String) = runAction("已创建文件夹 $name") {
+        repo.createFolder(currentDir.value, name)
+        null
+    }
+
+    fun rename(id: Long, newName: String) = runAction("已重命名为 $newName") {
+        repo.rename(id, newName)
+        null
+    }
+
+    fun moveToSelected(destDir: String) = runAction {
+        val count = repo.move(selectedIds(), destDir)
+        "已移动 $count 项"
+    }
+
+    fun copyToSelected(destDir: String) = runAction {
+        val count = repo.copyInto(selectedIds(), destDir)
+        "已复制 $count 项到 ${destDir.ifBlank { "文件库根目录" }}"
+    }
+
+    fun trashSelected() = runAction("已移入回收站") {
+        repo.trash(selectedIds())
+        null
+    }
+
+    fun toggleFavorite(id: Long, favorite: Boolean) {
+        viewModelScope.launch { runCatching { repo.setFavorite(id, favorite) } }
+    }
+
+    fun exportSelectedToPublic() = runAction {
+        val entries = repo.entriesByIds(selectedIds())
+        val count = graph.exporter.exportToPublicLibrary(entries)
+        "已导出 $count 项到公共目录，相册与系统文件管理器现在可以看到它们"
+    }
+
+    fun exportSelectedToTree(treeUri: Uri) = runAction {
+        val entries = repo.entriesByIds(selectedIds())
+        val count = graph.exporter.exportToTree(treeUri, entries)
+        "已导出 $count 项到所选文件夹（保留目录结构）"
+    }
+
+    fun compressSelected(zipName: String, password: String?) = runAction("已生成 $zipName.zip") {
+        val entries = repo.entriesByIds(selectedIds())
+        require(entries.isNotEmpty()) { "请先选择要压缩的项目" }
+        graph.archives.compressToVault(entries, zipName, currentDir.value, password)
+        null
+    }
+
+    fun importFiles(uris: List<Uri>, deleteSource: Boolean) =
+        graph.importer.importFiles(uris, currentDir.value, deleteSource)
+
+    fun importFolder(treeUri: Uri, deleteSource: Boolean) =
+        graph.importer.importTree(treeUri, currentDir.value, rememberFolder = true, deleteSource = deleteSource)
+
+    /** 把选中条目移动到用户指定的任意文件夹；校验字节数后才从本应用删除。 */
+    fun moveSelectedToTree(treeUri: Uri) = runAction {
+        val entries = repo.entriesByIds(selectedIds())
+        require(entries.isNotEmpty()) { "请先选择要移动的项目" }
+        val outcome = graph.exporter.moveToTree(treeUri, entries)
+        buildString {
+            append("已移出 ${outcome.moved} 项，本应用内不再保留")
+            if (outcome.unresolved.isNotEmpty()) {
+                append("；${outcome.unresolved.size} 项未通过校验，已保留：")
+                append(outcome.unresolved.take(3).joinToString("、"))
+                if (outcome.unresolved.size > 3) append(" 等")
+            }
+        }
+    }
+
+    init {
+        reloadFolderChoices()
+    }
+}
+
+// ------------------------------------------------------------------ 目录浏览
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class FolderViewModel(graph: AppGraph, folderId: Long) : BrowseViewModel(graph) {
+
+    private val _path = MutableStateFlow("")
+    override val currentDir: StateFlow<String> = _path
+
+    private val _options = MutableStateFlow(ListOptions())
+    val options: StateFlow<ListOptions> = _options
+
+    private val _viewMode = MutableStateFlow(ViewMode.LIST)
+    val viewMode: StateFlow<ViewMode> = _viewMode
+
+    val storageRoot: String = graph.rootPath()
+
+    init {
+        if (folderId != ROOT_ID) {
+            viewModelScope.launch {
+                val start = runCatching { repo.entryById(folderId) }.getOrNull()
+                _path.value = if (start != null && start.isFolder) start.relativePath else ""
+            }
+        }
+    }
+
+    val entries: StateFlow<List<VaultEntry>> =
+        combine(_path, _options) { path, options -> repo.observeFolder(path, options) }
+            .flatMapLatest { it }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val breadcrumbs: StateFlow<List<Pair<String, String>>> = _path
+        .map { breadcrumbOf(it) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), listOf("" to "文件库"))
+
+    fun open(dirRelativePath: String) {
+        _path.value = runCatching { VaultPaths.normalizeRelative(dirRelativePath) }.getOrDefault("")
+        onSelectionCleared()
+    }
+
+    fun goUp(): Boolean {
+        val current = _path.value
+        if (current.isEmpty()) return false
+        open(current.trim('/').substringBeforeLast('/', ""))
+        return true
+    }
+
+    fun setOptions(newOptions: ListOptions) {
+        _options.value = newOptions
+    }
+
+    fun toggleViewMode() {
+        _viewMode.value = if (_viewMode.value == ViewMode.LIST) ViewMode.GRID else ViewMode.LIST
+    }
+}
+
+// ------------------------------------------------------------------ 类型分区
+
+enum class LibraryTab(val label: String, val kind: FileKind?) {
+    RECENTS("最近", null),
+    IMAGE("图片", FileKind.IMAGE),
+    VIDEO("视频", FileKind.VIDEO),
+    AUDIO("音频", FileKind.AUDIO),
+    DOCUMENT("文档", FileKind.DOCUMENT),
+    ARCHIVE("压缩包", FileKind.ARCHIVE),
+    FAVORITES("收藏", null);
+
+    val asGrid: Boolean get() = this == IMAGE || this == VIDEO
+}
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class LibraryViewModel(graph: AppGraph) : BrowseViewModel(graph) {
+
+    private val _tab = MutableStateFlow(LibraryTab.RECENTS)
+    val tab: StateFlow<LibraryTab> = _tab
+
+    override val currentDir = MutableStateFlow("")
+
+    val entries: StateFlow<List<VaultEntry>> = _tab.flatMapLatest { selected ->
+        when (selected) {
+            LibraryTab.RECENTS -> repo.observeRecent()
+            LibraryTab.FAVORITES -> repo.observeFavorites()
+            else -> repo.observeByKind(requireNotNull(selected.kind))
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val report: StateFlow<StorageReport?> = repo.observeStats()
+        .map<StorageReport, StorageReport?> { it }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    fun select(tab: LibraryTab) {
+        _tab.value = tab
+        onSelectionCleared()
+    }
+}
+
+// ------------------------------------------------------------------ 搜索
+
+@OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
+class SearchViewModel(graph: AppGraph) : BrowseViewModel(graph) {
+
+    private val _query = MutableStateFlow("")
+    val query: StateFlow<String> = _query
+
+    private val _kindFilter = MutableStateFlow<FileKind?>(null)
+    val kindFilter: StateFlow<FileKind?> = _kindFilter
+
+    override val currentDir = MutableStateFlow("")
+
+    private val _results = MutableStateFlow<List<VaultEntry>>(emptyList())
+    val results: StateFlow<List<VaultEntry>> = _results
+
+    private val _pending = MutableStateFlow(false)
+    val pending: StateFlow<Boolean> = _pending
+
+    init {
+        combine(_query, _kindFilter) { text, kind -> text.trim() to kind }
+            .distinctUntilChanged()
+            .debounce(220)
+            .onEach { (text, kind) ->
+                _pending.value = text.isNotEmpty()
+                _results.value = if (text.isEmpty()) emptyList() else repo.search(text, kind)
+                _pending.value = false
+            }
+            .launchIn(viewModelScope)
+    }
+
+    fun updateQuery(text: String) {
+        _query.value = text
+    }
+
+    fun setKindFilter(kind: FileKind?) {
+        _kindFilter.value = kind
+    }
+}
+
+// ------------------------------------------------------------------ 回收站
+
+class TrashViewModel(graph: AppGraph) : BrowseViewModel(graph) {
+
+    override val currentDir = MutableStateFlow("")
+
+    val entries: StateFlow<List<VaultEntry>> = repo.observeTrash()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun restoreSelected() = runAction("已恢复所选项目") {
+        repo.restore(selectedIds())
+        null
+    }
+
+    fun deleteForeverSelected() = runAction("已彻底删除") {
+        repo.deleteForever(selectedIds())
+        null
+    }
+
+    fun emptyTrash() = runAction("回收站已清空") {
+        repo.emptyTrash()
+        null
+    }
+}
