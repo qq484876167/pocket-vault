@@ -1,0 +1,67 @@
+name: iOS
+
+# iOS 无法在这台开发机（Windows）上编译，所以真编译与真测试都跑在 GitHub 托管的 macOS runner 上。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 工具链与环境
+        run: |
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+          echo "--- 可用模拟器 ---"
+          xcrun simctl list devices available | grep -E "iPhone" | head -12
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 生成工程（仓库里不提交 .xcodeproj）
+        run: xcodegen --spec ios/project.yml --project-directory ios
+
+      - name: 挑一个本机存在的模拟器
+        id: sim
+        run: |
+          SIM=$(xcrun simctl list devices available | grep -oE 'iPhone [0-9]+( Pro Max| Pro| Plus| mini)?' | head -1)
+          if [ -z "$SIM" ]; then echo "没找到可用 iPhone 模拟器" && exit 1; fi
+          echo "name=$SIM" >> "$GITHUB_OUTPUT"
+          echo "选中：$SIM"
+
+      - name: 编译
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project ios/PocketVault.xcodeproj -scheme PocketVault \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            2>&1 | tee ios-build.log
+
+      - name: 单元测试
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project ios/PocketVault.xcodeproj -scheme PocketVault \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= \
+            2>&1 | tee ios-test.log
+
+      - name: 保留构建与测试日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-logs
+          path: |
+            ios-build.log
+            ios-test.log
+          if-no-files-found: warn
