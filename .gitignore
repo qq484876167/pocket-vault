@@ -15,9 +15,3 @@ local.properties
 # 探针与日志
 scratch/
 *.log
-
-# iOS：.xcodeproj 由 XcodeGen 从 ios/project.yml 生成，不入库
-ios/PocketVault.xcodeproj/
-DerivedData/
-*.xcresult
-xcuserdata/
