@@ -22,23 +22,23 @@ enum VaultLayout {
         container.appendingPathComponent(vaultDirectoryName, isDirectory: true)
     }
 
+    /// 排除备份只能逐资源设置，目录不会自动向下继承。
+    /// URL.setResourceValues 是 mutating 方法，所以要经一个可变副本，不能写成 URL 的普通扩展方法。
+    static func excludeFromBackup(_ url: URL) throws {
+        var target = url
+        var values = try target.resourceValues(forKeys: [.isExcludedFromBackupKey])
+        values.isExcludedFromBackup = true
+        try target.setResourceValues(values)
+    }
+
     /// 建好 vault 与回收站，并把它们标记为不参与 iCloud / iTunes 备份。
     @discardableResult
     static func prepare(in fileManager: FileManager = .default) throws -> URL {
-        let root = vaultRoot(in: try containerRoot(fileManager: fileManager))
+        let root = vaultRoot(in: try containerRoot(in: fileManager))
         for directory in [root, root.appendingPathComponent(trashDirectoryName, isDirectory: true)] {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            try directory.excludedFromBackup()
+            try excludeFromBackup(directory)
         }
         return root
-    }
-}
-
-extension URL {
-    /// 排除备份只能逐个资源设置，目录不会自动向下继承。
-    func excludedFromBackup() throws {
-        var values = try resourceValues(forKeys: [.isExcludedFromBackupKey])
-        values.isExcludedFromBackup = true
-        try setResourceValues(values)
     }
 }

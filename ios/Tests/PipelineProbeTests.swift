@@ -40,7 +40,7 @@ final class PipelineProbeTests: XCTestCase {
         let payload = "probe".data(using: .utf8)!
         try payload.write(to: file, options: .atomic)
 
-        try file.excludedFromBackup()
+        try VaultLayout.excludeFromBackup(file)
         let readBack = try file.resourceValues(forKeys: [.isExcludedFromBackupKey])
         XCTAssertEqual(readBack.isExcludedFromBackup, true, "排除备份标记没生效")
 

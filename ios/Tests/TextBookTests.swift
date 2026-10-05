@@ -243,8 +243,11 @@ final class TextBookTests: XCTestCase {
         XCTAssertEqual(rare.count, 1)
         XCTAssertEqual(rare.first?.chapterIndex, 200, "只出现在最后一章的词必须还能命中")
 
-        XCTAssertFalse(try await book.search("flame").isEmpty, "忽略大小写失效")
-        XCTAssertTrue(try await book.search("   ").isEmpty)
+        // 先落进局部变量再断言：不把 try await 塞进断言宏的 autoclosure 里赌重载存在
+        let flameHits = try await book.search("flame")
+        XCTAssertFalse(flameHits.isEmpty, "忽略大小写失效")
+        let blank = try await book.search("   ")
+        XCTAssertTrue(blank.isEmpty)
     }
 
     // MARK: - 性能（数字打进 CI 日志，作为 P2-1 的现场证据）
