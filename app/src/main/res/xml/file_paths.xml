@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- context.filesDir/vault：默认私有根目录 -->
+    <files-path
+        name="vault_internal"
+        path="vault/" />
+    <!-- getExternalFilesDir("vault")：可选的沙箱外存根目录（Android 11+ 对其他应用不可见） -->
+    <external-files-path
+        name="vault_external"
+        path="vault/" />
+</paths>

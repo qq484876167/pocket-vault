@@ -1,0 +1,2 @@
+-keep class net.lingala.zip4j.** { *; }
+-dontwarn net.lingala.zip4j.**
