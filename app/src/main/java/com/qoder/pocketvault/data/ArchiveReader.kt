@@ -103,6 +103,13 @@ interface ArchiveReader : Closeable {
     /** 只取一个条目的内容（顺序型格式会从头重扫到它）。 */
     fun content(entry: ArchiveItem): InputStream
 
+    /**
+     * 用当前密码真的读出一点点字节来验证密码。zip 的中央目录不加密，"能列出条目名"
+     * 完全证明不了密码对；7z 才是连目录都在密文里。密码不对时抛 [WrongArchivePasswordException]。
+     * 没有加密内容的格式直接放过。
+     */
+    fun probeReadable(): Unit = Unit
+
     /** 非目录条目的字节总数；拿不到返回 -1，UI 显示不确定进度。 */
     fun totalBytes(items: List<ArchiveItem>): Long {
         val total = items.filter { !it.isDirectory && it.sizeBytes >= 0 }.sumOf { it.sizeBytes }
@@ -114,6 +121,89 @@ class WrongArchivePasswordException(message: String) : IOException(message)
 
 /** 打开失败统一抛可读消息，不让上层靠枚举猜。 */
 class ArchiveOpenException(message: String, cause: Throwable? = null) : IOException(message, cause)
+
+/** "读不出来"到底是哪一类：缺密码 / 密码不对（含不支持的加密方式）/ 包本身坏了。 */
+internal sealed interface ArchiveFailure {
+    data object NeedsPassword : ArchiveFailure
+    data object WrongPassword : ArchiveFailure
+    data class Broken(val reason: String) : ArchiveFailure
+}
+
+/**
+ * 判定只看异常类型和"这个包里有没有加密内容"，不看第三方库的文案——
+ * 靠文案匹配会在换版本时静默失效，还会把坏包说成"要密码"、把加密包说成"格式不支持"。
+ */
+internal fun classifyArchiveFailure(
+    e: Throwable,
+    password: String?,
+    knownEncrypted: Boolean,
+): ArchiveFailure {
+    if (e is WrongArchivePasswordException) return ArchiveFailure.WrongPassword
+    if (e is org.apache.commons.compress.PasswordRequiredException) return ArchiveFailure.NeedsPassword
+    when ((e as? net.lingala.zip4j.exception.ZipException)?.type) {
+        net.lingala.zip4j.exception.ZipException.Type.WRONG_PASSWORD,
+        net.lingala.zip4j.exception.ZipException.Type.UNSUPPORTED_ENCRYPTION,
+        -> return ArchiveFailure.WrongPassword
+        else -> Unit
+    }
+    // 已经知道包里有加密内容：没给密码就是要密码，给了密码还读不出就是密码不对
+    if (knownEncrypted) {
+        return if (password.isNullOrEmpty()) ArchiveFailure.NeedsPassword else ArchiveFailure.WrongPassword
+    }
+    return ArchiveFailure.Broken(e.messageSafe())
+}
+
+/**
+ * 把底层异常翻译成本应用自己的两种后果之一：密码问题（[WrongArchivePasswordException]）
+ * 或包打不开（[ArchiveOpenException]）。上层只看类型，不读文案。
+ */
+internal fun archiveFailureOf(
+    e: Throwable,
+    password: String?,
+    knownEncrypted: Boolean,
+    subject: String,
+): IOException = when (val failure = classifyArchiveFailure(e, password, knownEncrypted)) {
+    ArchiveFailure.NeedsPassword -> WrongArchivePasswordException("${subject}加了密码，请先输入")
+    ArchiveFailure.WrongPassword -> WrongArchivePasswordException("密码不对，或者${subject}用了不支持的加密方式")
+    is ArchiveFailure.Broken -> ArchiveOpenException("${subject}打不开：${failure.reason}", e)
+}
+
+/**
+ * 打开一个包的结论，五种状态彼此独立：界面对"还没给密码"和"密码不对"要给不同提示，
+ * 不能再挤进一个 error 字符串里靠文案猜。
+ */
+sealed interface ArchiveAccess {
+    /** 能列能解：本来就没加密，或密码已经真读出过字节 */
+    data class Readable(val items: List<ArchiveItem>) : ArchiveAccess
+
+    /** 包是加密的，还没拿到密码 */
+    data object NeedsPassword : ArchiveAccess
+
+    /** 给了密码还是解不开：输入框内容要留着让用户改，不要让他重打 */
+    data object WrongPassword : ArchiveAccess
+
+    /** 本应用不接的格式（rar / iso / zst 等），要给"用其他应用打开" */
+    data class Unsupported(val reason: String) : ArchiveAccess
+
+    /** 包本身坏了：说"打不开"，不能骗用户去输密码，也不能说成格式不支持 */
+    data class Broken(val reason: String) : ArchiveAccess
+}
+
+/**
+ * 开包结果 → 界面状态。判定只看异常类型和"给没给密码"，不读异常文案；
+ * 单独成函数是为了让这张表能在纯 JVM 探针里逐条断言。
+ */
+internal fun archiveAccessOf(password: String?, outcome: Result<List<ArchiveItem>>): ArchiveAccess =
+    outcome.fold(
+        onSuccess = { ArchiveAccess.Readable(it) },
+        onFailure = { e ->
+            when {
+                e is WrongArchivePasswordException && password.isNullOrEmpty() -> ArchiveAccess.NeedsPassword
+                e is WrongArchivePasswordException -> ArchiveAccess.WrongPassword
+                else -> ArchiveAccess.Broken(e.messageSafe())
+            }
+        },
+    )
 
 /** 包内条目名属于外部不可信输入，tar / 7z 与 zip 同样要过这道清洗。 */
 object ArchiveEntryNames {
@@ -137,6 +227,9 @@ object ArchiveEntryNames {
 
 internal fun Throwable.messageSafe(): String = message ?: javaClass.simpleName
 
+/** 密码验证只需要读出一点点字节就够判定，不消费整个条目。 */
+private const val PROBE_BYTES = 16
+
 /** 压缩包 → 同名新文件夹的命名规则：去扩展名（含复合后缀），再过一遍安全名清洗。 */
 object ArchiveNames {
 
@@ -150,12 +243,6 @@ object ArchiveNames {
         return VaultPaths.sanitizeName(withoutExt)
     }
 }
-
-private fun looksLikePasswordProblem(message: String): Boolean =
-    message.contains("password", ignoreCase = true) ||
-        message.contains("encrypted", ignoreCase = true) ||
-        message.contains("crypt", ignoreCase = true) ||
-        message.contains("cannot find header", ignoreCase = true)
 
 /** 只读够声明的字节数就结束，防止顺序流越过条目边界读进下一个条目。 */
 internal class LimitedInputStream(
@@ -200,16 +287,20 @@ internal class ZipArchiveReader(
     private val zip: ZipFile = try {
         if (password.isNullOrEmpty()) ZipFile(file) else ZipFile(file, password.toCharArray())
     } catch (e: Exception) {
-        if (looksLikePasswordProblem(e.messageSafe())) {
-            throw WrongArchivePasswordException("这个压缩包需要密码，或密码不对")
-        }
-        throw ArchiveOpenException("打不开这个压缩包：${e.messageSafe()}", e)
+        throw archiveFailureOf(e, password, knownEncrypted = false, subject = "这个压缩包")
     }
 
-    private val headers: List<FileHeader> = zip.fileHeaders
+    private val headers: List<FileHeader> = try {
+        zip.fileHeaders
+    } catch (e: Exception) {
+        throw archiveFailureOf(e, password, knownEncrypted = false, subject = "这个压缩包")
+    }
+
+    /** 有没有加密条目：密码验证只挑一个真条目试读，代价是几十毫秒级。 */
+    private val encryptedHeader: FileHeader? = headers.firstOrNull { it.isEncrypted }
 
     override val capability: ArchiveCapability
-        get() = if (password.isNullOrEmpty() && headers.any { it.isEncrypted }) {
+        get() = if (password.isNullOrEmpty() && encryptedHeader != null) {
             ArchiveCapability.PASSWORD_REQUIRED
         } else {
             ArchiveCapability.EXTRACTABLE
@@ -236,13 +327,19 @@ internal class ZipArchiveReader(
         return streamOf(header)
     }
 
+    /**
+     * zip 的中央目录不加密，所以"列得出来"不等于"密码对"：
+     * 这里真读第一个加密条目的前若干字节，密码错 zip4j 会立刻抛 WRONG_PASSWORD。
+     */
+    override fun probeReadable() {
+        val header = encryptedHeader ?: return
+        streamOf(header).use { stream -> stream.read(ByteArray(PROBE_BYTES)) }
+    }
+
     private fun streamOf(header: FileHeader): InputStream = try {
         zip.getInputStream(header)
     } catch (e: Exception) {
-        if (looksLikePasswordProblem(e.messageSafe())) {
-            throw WrongArchivePasswordException("密码不对，或者这个包用了不支持的加密方式")
-        }
-        throw ArchiveOpenException("读不出 ${header.fileName}：${e.messageSafe()}", e)
+        throw archiveFailureOf(e, password, knownEncrypted = header.isEncrypted, subject = "这个压缩包")
     }
 
     /** 清洗不过就整条丢掉，绝不回退成原始名。 */
@@ -373,7 +470,7 @@ internal class TarArchiveReader(
 }
 
 /** 7z：SevenZFile 可随机访问；LZMA2 / AES 解码由 org.tukaani:xz 提供。 */
-internal class SevenZArchiveReader(file: File, password: String?) : ArchiveReader {
+internal class SevenZArchiveReader(file: File, private val password: String?) : ArchiveReader {
 
     private val archive: SevenZFile?
     private val openError: Exception?
@@ -394,20 +491,39 @@ internal class SevenZArchiveReader(file: File, password: String?) : ArchiveReade
 
     /**
      * 7z 的条目对象没有"是否加密"标记（实测 SevenZArchiveEntry 只有
-     * getName/getSize/isDirectory/hasStream），所以只能靠打开结果判断：
-     * 整个头部在密文里时打不开，就按需要密码处理。
+     * getName/getSize/isDirectory/hasStream）；而 commons 对**密码错误**抛的是
+     * `org.tukaani.xz.CorruptedInputException("Compressed data is corrupt")`，与真正的数据损坏
+     * 在类型上没法区分。所以：缺密码只信 PasswordRequiredException，
+     * "给了密码还读不出"一律按密码不对处理（绝不报成格式不支持）。
      */
     override val capability: ArchiveCapability
         get() = when {
             archive != null -> ArchiveCapability.EXTRACTABLE
-            openError != null && looksLikePasswordProblem(openError!!.messageSafe()) -> ArchiveCapability.PASSWORD_REQUIRED
-            else -> ArchiveCapability.UNSUPPORTED
+            classifyArchiveFailure(
+                openError ?: IOException("未知原因"),
+                password,
+                knownEncrypted = !password.isNullOrEmpty(),
+            ) is ArchiveFailure.Broken -> ArchiveCapability.UNSUPPORTED
+            else -> ArchiveCapability.PASSWORD_REQUIRED
         }
 
-    private fun requireOpen(): SevenZFile = archive ?: throw when {
-        capability == ArchiveCapability.PASSWORD_REQUIRED ->
-            WrongArchivePasswordException("这个 7z 包需要密码（连目录都是加密的）")
-        else -> ArchiveOpenException("打不开这个 7z 包：${openError?.messageSafe() ?: "未知原因"}", openError)
+    private fun requireOpen(): SevenZFile = archive ?: throw archiveFailureOf(
+        openError ?: IOException("未知原因"),
+        password,
+        // 头部加密的 7z 读不到任何条目信息：给了密码还是打不开，按密码不对处理，绝不报"格式不支持"
+        knownEncrypted = !password.isNullOrEmpty(),
+        subject = "这个 7z 包",
+    )
+
+    /** 头部没加密、内容加密的 7z：打开是成功的，只有真读字节才会暴露密码不对。 */
+    override fun probeReadable() {
+        val entry = items.firstOrNull { it.hasStream() && !it.isDirectory } ?: return
+        val file = requireOpen()
+        try {
+            file.getInputStream(entry).use { it.read(ByteArray(PROBE_BYTES)) }
+        } catch (e: Exception) {
+            throw archiveFailureOf(e, password, knownEncrypted = !password.isNullOrEmpty(), subject = "这个 7z 包")
+        }
     }
 
     override suspend fun entries(): List<ArchiveItem> {
@@ -439,11 +555,8 @@ internal class SevenZArchiveReader(file: File, password: String?) : ArchiveReade
     private fun streamOf(entry: SevenZArchiveEntry): InputStream = try {
         requireOpen().getInputStream(entry)
     } catch (e: Exception) {
-        if (e is WrongArchivePasswordException) throw e
-        if (looksLikePasswordProblem(e.messageSafe())) {
-            throw WrongArchivePasswordException("密码不对，或者这个包用了不支持的加密方式")
-        }
-        throw ArchiveOpenException("读不出 ${entry.name}：${e.messageSafe()}", e)
+        if (e is WrongArchivePasswordException || e is ArchiveOpenException) throw e
+        throw archiveFailureOf(e, password, knownEncrypted = !password.isNullOrEmpty(), subject = "这个 7z 包")
     }
 
     private fun SevenZArchiveEntry.toItem(): ArchiveItem? {

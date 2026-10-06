@@ -2,6 +2,8 @@ package com.qoder.pocketvault.ui.screen
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -33,16 +35,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.qoder.pocketvault.core.VaultPaths
 import com.qoder.pocketvault.core.formatBytes
-import com.qoder.pocketvault.data.ArchiveCapability
 import com.qoder.pocketvault.data.ArchiveItem
 import com.qoder.pocketvault.data.ConflictPolicy
 import com.qoder.pocketvault.data.ExtractPlan
@@ -71,11 +75,11 @@ fun ArchiveCard(
     onPasswordChange: (String) -> Unit,
     targetLabel: String,
     folders: List<Pair<String, String>>,
-    onList: (String) -> Unit,
+    onList: () -> Unit,
     onPlan: (ExtractTarget, String?) -> Unit,
     onExtract: (ExtractTarget, String?, ConflictPolicy, Boolean) -> Unit,
-    onExtractOne: (ArchiveItem, String) -> Unit,
-    onPreviewOne: (ArchiveItem, String, (EntryPreview) -> Unit) -> Unit,
+    onExtractOne: (ArchiveItem) -> Unit,
+    onPreviewOne: (ArchiveItem, (EntryPreview) -> Unit) -> Unit,
     onOpenDestination: () -> Unit,
     onCleanup: () -> Unit,
     onOpenExternal: () -> Unit,
@@ -88,12 +92,17 @@ fun ArchiveCard(
     var menuFor by remember { mutableStateOf<ArchiveItem?>(null) }
     var preview by remember { mutableStateOf<EntryPreview?>(null) }
     var folderConflictAsked by remember { mutableStateOf(false) }
+    val passwordField = remember { FocusRequester() }
 
     val plan = state.plan
-    val unsupported = state.capability == ArchiveCapability.UNSUPPORTED
-    val askPassword = state.capability == ArchiveCapability.PASSWORD_REQUIRED ||
-        state.needsPassword ||
-        (state.error != null && state.items.isEmpty())
+    // 五种结论各自渲染：不接的格式、坏掉的包、要密码、密码不对、能读
+    val blockedReason = state.blockedReason
+    val askPassword = state.askPassword
+
+    LaunchedEffect(state.passwordAttempts) {
+        // 输错之后把光标留在输入框里，用户改一个字符就能再试，不用先点一下
+        if (state.passwordAttempts > 0) passwordField.requestFocus()
+    }
 
     Column(Modifier.padding(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -102,10 +111,10 @@ fun ArchiveCard(
         }
         Spacer(Modifier.height(8.dp))
 
-        if (unsupported) {
+        if (blockedReason != null) {
             // 以前这里是一张空白卡片，什么提示都没有，用户只会以为应用坏了
             Text(
-                state.unsupportedReason ?: "这个格式暂不支持在应用内打开",
+                blockedReason,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
@@ -118,13 +127,21 @@ fun ArchiveCard(
             OutlinedTextField(
                 value = password,
                 onValueChange = onPasswordChange,
-                label = { Text("压缩包密码（无密码留空）") },
+                label = { Text("压缩包密码（留空等于取消）") },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { onList() }),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(passwordField),
             )
+            state.passwordHint?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
             Spacer(Modifier.height(6.dp))
-            VaultButton("读取列表", onClick = { onList(password) })
+            VaultButton("读取列表", onClick = onList)
         }
 
         state.error?.let {
@@ -201,7 +218,7 @@ fun ArchiveCard(
 
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                val blocked = plan?.let { !it.enoughSpace || it.needsPassword } == true
+                val blocked = askPassword || plan?.let { !it.enoughSpace } == true
                 VaultButton(
                     "解压",
                     enabled = !blocked,
@@ -321,7 +338,7 @@ fun ArchiveCard(
                 TextButton(
                     onClick = {
                         menuFor = null
-                        onExtractOne(item, password)
+                        onExtractOne(item)
                     },
                     enabled = item.regularFile,
                 ) { Text("提取到 $targetLabel") }
@@ -332,7 +349,7 @@ fun ArchiveCard(
                         onClick = {
                             val chosen = item
                             menuFor = null
-                            onPreviewOne(chosen, password) { preview = it }
+                            onPreviewOne(chosen) { preview = it }
                         },
                         enabled = item.regularFile,
                     ) { Text("预览") }

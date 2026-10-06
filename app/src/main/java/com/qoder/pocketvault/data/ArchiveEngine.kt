@@ -85,21 +85,29 @@ data class ExtractSummary(
  */
 class ArchiveEngine(private val repo: VaultRepository) {
 
-    /** 保留旧名字，语义换成三态：EXTRACTABLE / PASSWORD_REQUIRED / UNSUPPORTED。 */
-    fun supportFor(archive: File): ArchiveCapability = when (ArchiveFormat.detect(archive.name)) {
-        ArchiveFormat.UNSUPPORTED -> ArchiveCapability.UNSUPPORTED
-        else -> runCatching {
-            ArchiveReaders.open(archive, null).use { it.capability }
-        }.getOrElse { e ->
-            if (e is WrongArchivePasswordException) ArchiveCapability.PASSWORD_REQUIRED
-            else ArchiveCapability.UNSUPPORTED
+    /**
+     * 一次开包同时完成"探能力 + 验密码 + 列条目"。
+     *
+     * 探测必须带着密码去做：以前的 supportFor 固定用 null 开包，加密包永远返回"要密码"，
+     * 用户输了正确密码也进不到 EXTRACTABLE 分支。而"能列出条目名"同样证明不了密码对
+     * （zip 的中央目录不加密，实测 zipcrypto / aes256 / mixed 三种包无密码都能列出），
+     * 所以这里对加密条目真读 16 个字节来判定。
+     */
+    suspend fun access(archive: File, password: String?): ArchiveAccess = withContext(Dispatchers.IO) {
+        val format = ArchiveFormat.detect(archive.name)
+        if (format == ArchiveFormat.UNSUPPORTED) {
+            return@withContext ArchiveAccess.Unsupported(ArchiveFormat.unsupportedReason(archive.name))
         }
-    }
-
-    /** 列出包内条目；密码缺失/错误、格式不支持都抛出可读提示。 */
-    suspend fun list(archive: File, password: String?): List<ArchiveItem> = withContext(Dispatchers.IO) {
-        requireReadable(archive)
-        ArchiveReaders.open(archive, password).use { reader -> reader.entries() }
+        val outcome = runCatching {
+            // 条目不在库里（被移进回收站 / 已删除）也归成 Broken，不能把异常抛到界面线程的协程外
+            requireReadable(archive)
+            ArchiveReaders.open(archive, password).use { reader ->
+                // 先验密码再列目录：zip 的中央目录不加密，列得出来不代表密码对
+                reader.probeReadable()
+                reader.entries()
+            }
+        }
+        archiveAccessOf(password, outcome)
     }
 
     /**

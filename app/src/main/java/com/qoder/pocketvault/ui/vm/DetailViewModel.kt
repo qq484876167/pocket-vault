@@ -7,14 +7,12 @@ import com.qoder.pocketvault.AppGraph
 import com.qoder.pocketvault.core.FileKind
 import com.qoder.pocketvault.core.VaultPaths
 import com.qoder.pocketvault.core.joinRelative
-import com.qoder.pocketvault.data.ArchiveCapability
+import com.qoder.pocketvault.data.ArchiveAccess
 import com.qoder.pocketvault.data.ArchiveNames
-import com.qoder.pocketvault.data.ArchiveFormat
 import com.qoder.pocketvault.data.ArchiveItem
 import com.qoder.pocketvault.data.ConflictPolicy
 import com.qoder.pocketvault.data.ExtractPlan
 import com.qoder.pocketvault.data.ExtractSummary
-import com.qoder.pocketvault.data.WrongArchivePasswordException
 import com.qoder.pocketvault.data.db.ROOT_ID
 import com.qoder.pocketvault.data.db.VaultEntry
 import com.qoder.pocketvault.data.userMessage
@@ -40,18 +38,49 @@ data class ArchiveUiState(
     val loaded: Boolean = false,
     val loading: Boolean = false,
     val items: List<ArchiveItem> = emptyList(),
-    val needsPassword: Boolean = false,
-    val error: String? = null,
+    /** 打开这个包的结论：能读 / 要密码 / 密码不对 / 格式不接 / 包坏了。 */
+    val access: ArchiveAccess? = null,
+    /**
+     * 密码只活在这个 ViewModel 里：转屏不丢，但**不写盘、不进 SavedStateHandle**——
+     * 这是零网络零权限的私密库，把解压密码落盘等于把钥匙放在锁旁边。进程重建后重新问一次。
+     */
+    val password: String = "",
+    /** 已经真读出过字节验证过的密码；和 password 一致就不再重开一次包。 */
+    val verifiedPassword: String? = null,
+    /** 连续输错的次数，用来说清"第几次"而不是反复同一句。 */
+    val passwordAttempts: Int = 0,
     val extractedCount: Int = 0,
     val progress: Pair<Long, Long>? = null,
-    /** UNSUPPORTED / PASSWORD_REQUIRED 时界面要走另一条路，不能再显示空白卡片。 */
-    val capability: ArchiveCapability? = null,
-    val unsupportedReason: String? = null,
     /** 解压前的计划（条目数、总量、冲突数、空间够不够）。 */
     val plan: ExtractPlan? = null,
     /** 最近一次解压结果，用于"进入该文件夹"与失败后的一键清理。 */
     val lastSummary: ExtractSummary? = null,
-)
+    val error: String? = null,
+) {
+    /** 需要把密码框摆在界面上（还没给 / 给错了）。 */
+    val askPassword: Boolean
+        get() = access is ArchiveAccess.NeedsPassword || access is ArchiveAccess.WrongPassword
+
+    /** 密码框下的提示：没给和给错是两句话，不能共用一条自相矛盾的文案。 */
+    val passwordHint: String?
+        get() = when (access) {
+            ArchiveAccess.NeedsPassword -> "这个包加了密码，输入后点「读取列表」"
+            ArchiveAccess.WrongPassword -> if (passwordAttempts > 1) {
+                "密码不对，或者这个包用了不支持的加密方式（已经试了 $passwordAttempts 次）"
+            } else {
+                "密码不对，或者这个包用了不支持的加密方式"
+            }
+            else -> null
+        }
+
+    /** 格式不接或包坏了：给原因 + "用其他应用打开"，不能只留一张空白卡片。 */
+    val blockedReason: String?
+        get() = when (val state = access) {
+            is ArchiveAccess.Unsupported -> state.reason
+            is ArchiveAccess.Broken -> state.reason
+            else -> null
+        }
+}
 
 /** 单个条目的详情：预览、压缩包内容、以及针对该条目的操作。 */
 class DetailViewModel(
@@ -97,7 +126,7 @@ class DetailViewModel(
             _preview.value = runCatching { graph.preview.load(loaded) }.getOrDefault(PreviewContent.None)
             val file = physicalFile()
             if (loaded.kind == FileKind.ARCHIVE && file != null) {
-                openArchive(file, null)
+                refreshArchiveAccess()
             } else {
                 _archive.value = ArchiveUiState(loaded = true)
             }
@@ -121,74 +150,74 @@ class DetailViewModel(
         _entry.value?.relativePath?.trim('/')?.substringBeforeLast('/', "").orEmpty()
 
     /**
-     * 打开包并按能力分流：不支持的格式给明确原因，不再显示空白卡片；
-     * 需要密码的直接把密码框摆出来（不用先点「读取列表」）。
+     * 一次开包同时"探能力 + 验密码 + 列条目"，结论按五种状态分别渲染。
+     * 关键修正：探测必须带着密码去做——以前固定用 null 开包，加密包永远停在"要密码"，
+     * 用户输了正确密码也进不了可读分支。
      */
-    private fun openArchive(file: File, password: String?) {
-        val capability = graph.archives.supportFor(file)
-        when (capability) {
-            ArchiveCapability.UNSUPPORTED -> {
-                _archive.value = ArchiveUiState(
-                    loaded = true,
-                    capability = capability,
-                    unsupportedReason = ArchiveFormat.unsupportedReason(file.name),
-                )
-            }
-
-            ArchiveCapability.PASSWORD_REQUIRED -> {
-                _archive.value = ArchiveUiState(
-                    loaded = true,
-                    capability = capability,
-                    needsPassword = true,
-                    error = if (password != null) "密码不对，或者这个包用了不支持的加密方式" else null,
-                )
-            }
-
-            ArchiveCapability.EXTRACTABLE -> listArchive(file, password, capability)
-        }
-    }
-
-    fun listArchive(password: String?) {
+    fun refreshArchiveAccess() {
         val file = physicalFile() ?: return
-        openArchive(file, password)
-    }
-
-    private fun listArchive(file: File, password: String?, capability: ArchiveCapability) {
-        _archive.value = _archive.value.copy(loading = true, error = null, capability = capability)
+        val current = _archive.value
+        val password = current.verifiedPassword ?: current.password.ifBlank { null }
+        _archive.value = current.copy(loading = true, error = null)
         viewModelScope.launch {
-            val outcome = runCatching { graph.archives.list(file, password) }
-            outcome.fold(
-                onSuccess = { items ->
-                    _archive.value = _archive.value.copy(
-                        loaded = true,
-                        loading = false,
-                        items = items,
-                        needsPassword = items.any { it.encrypted } && password == null,
-                        error = null,
-                    )
-                },
-                onFailure = { error ->
-                    _archive.value = _archive.value.copy(
-                        loaded = true,
-                        loading = false,
-                        needsPassword = password == null,
-                        capability = if (error is WrongArchivePasswordException) {
-                            ArchiveCapability.PASSWORD_REQUIRED
-                        } else {
-                            capability
-                        },
-                        error = error.userMessage(),
-                    )
-                },
-            )
+            when (val access = graph.archives.access(file, password)) {
+                is ArchiveAccess.Readable -> _archive.value = _archive.value.copy(
+                    loaded = true, loading = false, access = access, items = access.items,
+                    verifiedPassword = password, passwordAttempts = 0, error = null,
+                )
+
+                ArchiveAccess.NeedsPassword -> _archive.value = _archive.value.copy(
+                    loaded = true, loading = false, access = access,
+                    items = emptyList(), verifiedPassword = null,
+                )
+
+                ArchiveAccess.WrongPassword -> _archive.value = _archive.value.copy(
+                    loaded = true, loading = false, access = access,
+                    items = emptyList(), verifiedPassword = null,
+                    passwordAttempts = _archive.value.passwordAttempts + 1,
+                )
+
+                is ArchiveAccess.Unsupported -> _archive.value = _archive.value.copy(
+                    loaded = true, loading = false, access = access,
+                    items = emptyList(), verifiedPassword = null, error = null,
+                )
+
+                is ArchiveAccess.Broken -> _archive.value = _archive.value.copy(
+                    loaded = true, loading = false, access = access,
+                    items = emptyList(), verifiedPassword = null, error = access.reason,
+                )
+            }
         }
     }
+
+    /** 改密码时把上一次的"密码不对"结论放下，免得输入框和提示互相矛盾。 */
+    fun setPassword(value: String) {
+        val current = _archive.value
+        if (current.password == value) return
+        val access = if (current.access is ArchiveAccess.WrongPassword) ArchiveAccess.NeedsPassword else current.access
+        _archive.value = current.copy(password = value, access = access)
+    }
+
+    /** 空密码按"取消"处理：不去探测，也不报"密码不对"。验过的密码不重复验。 */
+    fun submitPassword() {
+        val current = _archive.value
+        if (current.password.isBlank()) {
+            _archive.value = current.copy(access = ArchiveAccess.NeedsPassword, verifiedPassword = null)
+            return
+        }
+        if (current.password == current.verifiedPassword) return
+        refreshArchiveAccess()
+    }
+
+    /** 后续操作统一复用验证过的密码，不再重新探测、也不再问一遍。 */
+    private fun operationPassword(): String? =
+        _archive.value.verifiedPassword ?: _archive.value.password.ifBlank { null }
 
     /**
      * 解压前的一轮核对：真实落点、同名项数量、磁盘空间够不够。
      * 结果交给界面决定要不要弹「合并/改名/取消」与「覆盖/保留两者/跳过」。
      */
-    fun planExtract(target: ExtractTarget, specificFolder: String?, password: String?, onReady: (ExtractPlan) -> Unit) {
+    fun planExtract(target: ExtractTarget, specificFolder: String?, onReady: (ExtractPlan) -> Unit) {
         val file = physicalFile() ?: return
         val parent = containingFolder()
         val dest = when (target) {
@@ -199,6 +228,7 @@ class DetailViewModel(
         // 选「自动改名」时落点是空目录，冲突数天然是 0，界面用 suggestedFolder 说明。
         val landing = if (target == ExtractTarget.NEW_FOLDER) joinRelative(parent, archiveStem(file.name)) else dest
         val listed = _archive.value.items.ifEmpty { null }
+        val password = operationPassword()
         viewModelScope.launch {
             val plan = runCatching {
                 graph.archives.plan(file, dest, password, graph.paths.usableBytes(), listed, landing)
@@ -219,7 +249,6 @@ class DetailViewModel(
     fun extract(
         target: ExtractTarget,
         specificFolder: String?,
-        password: String?,
         policy: ConflictPolicy,
         mergeIntoExisting: Boolean,
     ) {
@@ -248,7 +277,9 @@ class DetailViewModel(
                 }
             }
             decision.fold(
-                onSuccess = { (dest, folderName) -> runExtraction(file, dest, folderName, password, policy) },
+                onSuccess = { (dest, folderName) ->
+                    runExtraction(file, dest, folderName, operationPassword(), policy)
+                },
                 onFailure = {
                     _busy.value = false
                     _message.value = it.userMessage()
@@ -336,13 +367,14 @@ class DetailViewModel(
     }
 
     /** 只提取包里的一个条目（条目行点击）。 */
-    fun extractEntry(item: ArchiveItem, password: String?) {
+    fun extractEntry(item: ArchiveItem) {
         if (_busy.value) return
         val file = physicalFile() ?: return
+        val password = operationPassword()
         _busy.value = true
         viewModelScope.launch {
             val outcome = runCatching {
-                graph.archives.extractEntryToVault(file, item, containingFolder(), password?.ifBlank { null })
+                graph.archives.extractEntryToVault(file, item, containingFolder(), password)
             }
             _busy.value = false
             outcome.fold(
@@ -355,8 +387,9 @@ class DetailViewModel(
     }
 
     /** 单条目预览：先解到缓存临时文件，图片与文本能直接看；其他类型提示先提取。 */
-    fun previewEntry(item: ArchiveItem, password: String?, onReady: (EntryPreview) -> Unit) {
+    fun previewEntry(item: ArchiveItem, onReady: (EntryPreview) -> Unit) {
         val file = physicalFile() ?: return
+        val password = operationPassword()
         if (_busy.value) return
         _busy.value = true
         viewModelScope.launch {
@@ -369,7 +402,7 @@ class DetailViewModel(
             lastPreview?.let { runCatching { it.delete() } }
             lastPreview = null
             val result = runCatching {
-                graph.archives.extractToTemp(file, item, password?.ifBlank { null }, item.displayName)
+                graph.archives.extractToTemp(file, item, password, item.displayName)
             }
             _busy.value = false
             val temp = result.getOrElse {

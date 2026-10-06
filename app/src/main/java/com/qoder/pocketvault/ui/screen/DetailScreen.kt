@@ -69,7 +69,6 @@ fun DetailScreen(vm: DetailViewModel) {
     val preview by vm.preview.collectAsStateWithLifecycle()
     val archive by vm.archive.collectAsStateWithLifecycle()
     val folders by vm.folders.collectAsStateWithLifecycle()
-    var archivePassword by remember { mutableStateOf("") }
     val message by vm.message.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val navigator = LocalNavigator.current
@@ -139,19 +138,15 @@ fun DetailScreen(vm: DetailViewModel) {
                 Spacer(Modifier.height(12.dp))
                 ArchiveCard(
                     state = archive,
-                    password = archivePassword,
-                    onPasswordChange = { archivePassword = it },
+                    password = archive.password,
+                    onPasswordChange = vm::setPassword,
                     targetLabel = folderDisplayName(current.relativePath.substringBeforeLast('/', "")),
                     folders = folders,
-                    onList = { password -> vm.listArchive(password.ifBlank { null }) },
-                    onPlan = { target, specific ->
-                        vm.planExtract(target, specific, archivePassword.ifBlank { null }) {}
-                    },
-                    onExtract = { target, specific, policy, merge ->
-                        vm.extract(target, specific, archivePassword.ifBlank { null }, policy, merge)
-                    },
-                    onExtractOne = { item, password -> vm.extractEntry(item, password) },
-                    onPreviewOne = { item, password, sink -> vm.previewEntry(item, password, sink) },
+                    onList = vm::submitPassword,
+                    onPlan = { target, specific -> vm.planExtract(target, specific) {} },
+                    onExtract = { target, specific, policy, merge -> vm.extract(target, specific, policy, merge) },
+                    onExtractOne = vm::extractEntry,
+                    onPreviewOne = { item, sink -> vm.previewEntry(item, sink) },
                     onOpenDestination = { vm.openDestination { id -> navigator?.openFolder(id) } },
                     onCleanup = vm::cleanupPartialExtraction,
                     onOpenExternal = { vm.openWith(context) },
