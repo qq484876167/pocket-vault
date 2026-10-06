@@ -212,11 +212,31 @@ class ImportEngine(
      * 且永不删除用户所选的那个根目录本身。
      */
     private suspend fun pruneEmptyDirs(treeUri: Uri, dirNodes: List<TreeNode>) {
+        var undecided = 0
         for (node in dirNodes.sortedByDescending { it.relativeInside.count { c -> c == '/' } }) {
             currentCoroutineContext().ensureActive()
             val docId = runCatching { DocumentsContract.getDocumentId(node.uri) }.getOrNull() ?: continue
-            if (queryChildren(treeUri, docId).isNotEmpty()) continue
-            deleteSourceFile(node.uri)
+            val children = queryChildren(treeUri, docId)
+            if (children == null) {
+                // 查询失败不等于"目录已空"：宁可留一个空目录，也不能删掉用户手机上一个非空目录
+                undecided++
+                Log.w(TAG, "目录内容查不到，跳过删除：${node.relativeInside}")
+                continue
+            }
+            if (children.isNotEmpty()) continue
+            if (!deleteSourceFile(node.uri)) {
+                _progress.value = _progress.value.copy(
+                    deleteBlocked = _progress.value.deleteBlocked + 1,
+                )
+            }
+        }
+        if (undecided > 0) {
+            _progress.value = _progress.value.copy(
+                message = listOfNotNull(
+                    _progress.value.message,
+                    "$undecided 个源目录读不到内容，为安全没有删除",
+                ).joinToString("；"),
+            )
         }
     }
 
@@ -233,10 +253,8 @@ class ImportEngine(
             repo.discardAllocation(allocation)
             throw e
         }
-        if (written <= 0L) {
-            repo.discardAllocation(allocation)
-            return Skipped
-        }
+        // 这里不再拿"写入字节数 0"当失败：空文件（空 txt / log）本来就该能入库，
+        // 真读坏了上面已经抛异常并丢弃分配了。
         repo.commitFile(
             allocation = allocation,
             sourceSignature = signature,
@@ -324,22 +342,43 @@ class ImportEngine(
         val queue = ArrayDeque<Triple<String, String, Int>>()
         queue.addLast(Triple(rootDocId, "", 0))
         var guard = 0
+        var unreadDirs = 0
         while (queue.isNotEmpty() && guard++ < MAX_DIRS) {
             currentCoroutineContext().ensureActive()
             val (docId, rel, depth) = queue.removeFirst()
             if (depth >= MAX_DEPTH) continue
-            for (child in queryChildren(treeUri, docId)) {
+            val children = queryChildren(treeUri, docId)
+            if (children == null) {
+                // 遍历中查不到这一层只能少导几个文件（不像删源目录那样不可逆），
+                // 但必须说出来，不能让用户以为整个目录都进来了
+                unreadDirs++
+                continue
+            }
+            for (child in children) {
                 val childRel = joinRelative(rel, child.name)
                 out += TreeNode(child.uri, childRel, child.isDir, child.hint)
                 if (child.isDir) queue.addLast(Triple(child.docId, childRel, depth + 1))
             }
+        }
+        if (unreadDirs > 0) {
+            _progress.value = _progress.value.copy(
+                message = listOfNotNull(
+                    _progress.value.message,
+                    "$unreadDirs 个源目录读不到内容，这次没导进来",
+                ).joinToString("；"),
+            )
         }
         return out
     }
 
     private data class RawChild(val docId: String, val uri: Uri, val name: String, val isDir: Boolean, val hint: TreeHint)
 
-    private fun queryChildren(treeUri: Uri, parentDocId: String): List<RawChild> {
+    /**
+     * 列出一个树目录的孩子。**null = 查询失败**（权限被回收、provider 瞬时出错），
+     * 空列表才是"这个目录真的没有孩子"。两者不能混为一谈：
+     * 调用方之一是"删掉源目录"这种不可逆动作。
+     */
+    private fun queryChildren(treeUri: Uri, parentDocId: String): List<RawChild>? {
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
         val columns = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -350,8 +389,10 @@ class ImportEngine(
         )
         val result = ArrayList<RawChild>()
         val treeKey = "${treeUri.authority}:${DocumentsContract.getTreeDocumentId(treeUri)}"
-        runCatching {
-            cr.query(childrenUri, columns, null, null, null)?.use { cursor ->
+        val read = runCatching {
+            val cursor = cr.query(childrenUri, columns, null, null, null)
+                ?: error("provider 没有返回游标")
+            cursor.use {
                 val idIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val nameIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
                 val mimeIndex = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
@@ -379,8 +420,9 @@ class ImportEngine(
                     )
                 }
             }
-        }.onFailure { Log.w(TAG, "读取文件夹内容失败: $parentDocId", it) }
-        return result
+        }.isSuccess
+        if (!read) Log.w(TAG, "读取文件夹内容失败: $parentDocId")
+        return if (read) result else null
     }
 
     // ---------------------------------------------------------------- 元信息

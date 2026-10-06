@@ -119,6 +119,8 @@ class ViewerViewModel(
     private var persistJob: Job? = null
     private var searchJob: Job? = null
     private var chapterJob: Job? = null
+    @Volatile
+    private var chapterToken = 0
     private var resumeGuard: Job? = null
     private var encodingOverride: TextEncoding? = null
 
@@ -259,10 +261,14 @@ class ViewerViewModel(
         _paragraphs.value = emptyList()
         // 先把落点占住：加载期间列表是空的，LazyColumn 报回来的第 0 项不该当成阅读位置
         _resumeParagraph.value = wanted
-        // 连着切章时只让最后一次加载写结果，不然旧章的段落会盖上来
+        // 连着切章时只让最后一次加载写结果，不然旧章的段落会盖上来。
+        // 光靠 cancel() 不够：TextBook.paragraphsOf 里全是阻塞的读盘 + 解码，
+        // 没有挂起点，被 cancel 的旧任务照样会跑完并写回 —— 所以额外用令牌比对。
         chapterJob?.cancel()
+        val token = ++chapterToken
         chapterJob = viewModelScope.launch(Dispatchers.IO) {
             val list = runCatching { book.paragraphsOf(index) }.getOrDefault(emptyList())
+            if (token != chapterToken || !isActive) return@launch
             _paragraphs.value = list
             val target = wanted.coerceIn(0, (list.size - 1).coerceAtLeast(0))
             _paragraphIndex.value = target

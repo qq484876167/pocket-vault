@@ -225,18 +225,30 @@ class ArchiveEngine(private val repo: VaultRepository) {
                 // createdFolder 只标记"本次新建"，供一键清理与导航判断用。
                 dest = target
             }
-            // 先建目录层级；目标位置是文件的跳过，避免 ensureFolderPath 抛异常打断整包
+            // 包里哪些目录落不下去（撞上库里同名的**文件**）：整棵子树都要跳过。
+            // 只跳目录那一条不够 —— 它下面的文件照样会在 ensureFolderPath 上抛异常，把整包打断。
+            val blocked = blockedDirs(dest, all)
             for (item in all.filter { it.isDirectory }) {
-                val rel = joinRelative(dest, item.displayName)
-                val existing = repo.entryAt(rel)
-                if (existing == null) repo.ensureFolderPath(rel)
-                else if (!existing.isFolder) tally.skipped++
+                if (item.displayName in blocked) continue
+                repo.ensureFolderPath(joinRelative(dest, item.displayName))
             }
             val files = all.filter { !it.isDirectory }
             attempted = files.size
             val total = reader.totalBytes(all)
-            val writable = files.filter { it.regularFile }
-            tally.skippedLinks = files.size - writable.size
+            val links = files.filterNot { it.regularFile }
+            tally.skippedLinks = links.size
+            val writable = files.filter { it.regularFile }.filter { item ->
+                val parent = item.displayName.substringBeforeLast('/', "")
+                if (parent in blocked) {
+                    tally.skipped++
+                    if (tally.lastRefusal == null) {
+                        tally.lastRefusal = "包内目录「$parent」和库里一个同名文件撞上了，它下面的条目没有解压"
+                    }
+                    false
+                } else {
+                    true
+                }
+            }
             var writtenLocally = 0L
             try {
                 reader.forEachContent(writable) { item, stream ->
@@ -380,6 +392,28 @@ class ArchiveEngine(private val repo: VaultRepository) {
     }
 
     // ---------------------------------------------------------------- 内部
+
+    /**
+     * 落点里哪些"包内目录"不能拿来放文件：目录条目本身撞上库里一个同名的**文件**，
+     * 或者路径中间某一级在库里是个文件。按不同的父目录各查一次，不按条目数查。
+     */
+    private suspend fun blockedDirs(dest: String, items: List<ArchiveItem>): Set<String> {
+        val candidates = items.map { it.displayName.substringBeforeLast('/', "") } +
+            items.filter { it.isDirectory }.map { it.displayName }
+        val blocked = HashSet<String>()
+        candidates.filter { it.isNotEmpty() }.distinct().forEach { parent ->
+            var prefix = ""
+            for (segment in parent.split('/').filter { it.isNotEmpty() }) {
+                prefix = if (prefix.isEmpty()) segment else "$prefix/$segment"
+                val found = repo.entryAt(joinRelative(dest, prefix))
+                if (found != null && !found.isFolder) {
+                    blocked += parent
+                    break
+                }
+            }
+        }
+        return blocked
+    }
 
     /** 单个条目落到库里；返回新条目 id，跳过时返回 null。整包与单条提取共用这一段。 */
     private suspend fun writeEntry(
