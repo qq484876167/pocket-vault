@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -208,6 +209,11 @@ class FolderViewModel(graph: AppGraph, folderId: Long) : BrowseViewModel(graph) 
         .map { breadcrumbOf(it) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), listOf("" to "文件库"))
 
+    /** 当前目录的行 id，供"在本目录内搜索"传参用（路径不进取向参数，见 Navigator 注释）。 */
+    val folderId: StateFlow<Long> = _path
+        .mapLatest { runCatching { repo.folderIdFor(it) }.getOrDefault(ROOT_ID) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ROOT_ID)
+
     fun open(dirRelativePath: String) {
         _path.value = runCatching { VaultPaths.normalizeRelative(dirRelativePath) }.getOrDefault("")
         onSelectionCleared()
@@ -272,13 +278,18 @@ class LibraryViewModel(graph: AppGraph) : BrowseViewModel(graph) {
 // ------------------------------------------------------------------ 搜索
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
-class SearchViewModel(graph: AppGraph) : BrowseViewModel(graph) {
+class SearchViewModel(graph: AppGraph, private val scopeFolderId: Long = ROOT_ID) : BrowseViewModel(graph) {
 
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query
 
     private val _kindFilter = MutableStateFlow<FileKind?>(null)
     val kindFilter: StateFlow<FileKind?> = _kindFilter
+
+    private val _scope = MutableStateFlow<VaultEntry?>(null)
+
+    /** 搜索范围：null 表示全库。由目录页带 id 进来时才有值。 */
+    val scope: StateFlow<VaultEntry?> = _scope
 
     override val currentDir = MutableStateFlow("")
 
@@ -289,12 +300,22 @@ class SearchViewModel(graph: AppGraph) : BrowseViewModel(graph) {
     val pending: StateFlow<Boolean> = _pending
 
     init {
-        combine(_query, _kindFilter) { text, kind -> text.trim() to kind }
+        if (scopeFolderId != ROOT_ID) {
+            viewModelScope.launch {
+                val folder = runCatching { repo.entryById(scopeFolderId) }.getOrNull()
+                    ?.takeIf { it.isFolder }
+                _scope.value = folder
+                currentDir.value = folder?.relativePath ?: ""
+            }
+        }
+        combine(_query, _kindFilter, _scope) { text, kind, scope ->
+            Triple(text.trim(), kind, scope?.relativePath)
+        }
             .distinctUntilChanged()
             .debounce(220)
-            .onEach { (text, kind) ->
+            .onEach { (text, kind, within) ->
                 _pending.value = text.isNotEmpty()
-                _results.value = if (text.isEmpty()) emptyList() else repo.search(text, kind)
+                _results.value = if (text.isEmpty()) emptyList() else repo.search(text, kind, within)
                 _pending.value = false
             }
             .launchIn(viewModelScope)
@@ -306,6 +327,12 @@ class SearchViewModel(graph: AppGraph) : BrowseViewModel(graph) {
 
     fun setKindFilter(kind: FileKind?) {
         _kindFilter.value = kind
+    }
+
+    /** 清掉范围即回到全库搜索；范围来自路由，清空后不会自己长回来。 */
+    fun clearScope() {
+        _scope.value = null
+        currentDir.value = ""
     }
 }
 

@@ -101,8 +101,13 @@ fun VaultApp() {
                         val id = entry.arguments?.getLong("id") ?: ROOT_ID
                         FolderScreen(graphViewModel { FolderViewModel(it, id) })
                     }
-                    composable("search") {
-                        SearchScreen(graphViewModel { SearchViewModel(it) })
+                    composable(
+                        // scope 可空：底栏「搜索」走无参的 "search"，目录页走 "search?scope= id"
+                        route = "search?scope={scope}",
+                        arguments = listOf(navArgument("scope") { type = NavType.LongType; defaultValue = ROOT_ID }),
+                    ) { entry ->
+                        val scope = entry.arguments?.getLong("scope") ?: ROOT_ID
+                        SearchScreen(graphViewModel { SearchViewModel(it, scope) })
                     }
                     composable("trash") {
                         TrashScreen(graphViewModel { TrashViewModel(it) })
@@ -151,7 +156,8 @@ private fun VaultBottomBar(navController: NavHostController) {
 
     NavigationBar {
         TOP_LEVEL.forEach { item ->
-            val selected = currentDestination?.hierarchy?.any { it.route == item.route } == true ||
+            // 路由模板可能带可选查询参数（search?scope={scope}），比高亮时先剥掉参数部分
+            val selected = currentDestination?.hierarchy?.any { it.route?.substringBefore("?") == item.route } == true ||
                 (item.route == "folder" && currentDestination?.route?.startsWith("folder/") == true)
             NavigationBarItem(
                 selected = selected,

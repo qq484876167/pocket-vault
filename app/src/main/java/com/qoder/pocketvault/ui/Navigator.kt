@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.material3.SnackbarHostState
 import androidx.navigation.NavHostController
+import com.qoder.pocketvault.data.db.ROOT_ID
 
 /** 页面跳转集中在这里，屏幕组件本身不直接依赖 NavController。 */
 class Navigator(private val controller: NavHostController) {
@@ -15,7 +16,11 @@ class Navigator(private val controller: NavHostController) {
     fun openRoot() = controller.navigate("folder")
     fun openDetail(id: Long) = controller.navigate("detail/$id")
     fun openViewer(id: Long) = controller.navigate("viewer/$id")
-    fun openSearch() = controller.navigate("search")
+
+    /** 带 folderId 时搜索限定在该目录及其子目录；不带就是全库搜索。 */
+    fun openSearch(folderId: Long = ROOT_ID) =
+        controller.navigate(if (folderId == ROOT_ID) "search" else "search?scope=$folderId")
+
     fun openTrash() = controller.navigate("trash")
     fun openSettings() = controller.navigate("settings")
     fun goBack() = controller.popBackStack()

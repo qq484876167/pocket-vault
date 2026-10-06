@@ -80,18 +80,27 @@ interface VaultDao {
     @Query("SELECT * FROM entries WHERE state = 'TRASHED' AND trashedAtMillis IS NOT NULL AND trashedAtMillis < :cutoff")
     suspend fun expiredTrash(cutoff: Long): List<VaultEntry>
 
-    /** :likePattern 必须已经用 ESCAPE '\' 转义过 % 和 _，由调用方负责。 */
+    /**
+     * :likePattern 必须已经用 ESCAPE '\' 转义过 % 和 _，由调用方负责。
+     * :scopePath 为 null 表示不限范围；传 `某目录/` 时因为 relativePath 是完整路径，
+     * 一次前缀比较就覆盖该目录的整棵子树，也不会串到 `某目录2/` 这类兄弟目录上。
+     *
+     * 范围用「前缀等值」而不是 LIKE：SQLite 的 LIKE 对 ASCII 恒为大小写不敏感
+     * （只有 case_sensitive_like 能改，加 COLLATE 压不住，实测过），`photos/` 会误命中 `Photos/`；
+     * 等值比较走 BINARY，天然区分大小写，也不必再给目录名做通配符转义。
+     */
     @Query(
         """
         SELECT * FROM entries
         WHERE state = 'ACTIVE' AND kind <> 'FOLDER'
           AND name LIKE '%' || :likePattern || '%' ESCAPE '\'
           AND (:kind IS NULL OR kind = :kind)
+          AND (:scopePath IS NULL OR substr(relativePath, 1, length(:scopePath)) = :scopePath)
         ORDER BY modifiedAtMillis DESC
         LIMIT :limit
         """
     )
-    suspend fun search(likePattern: String, kind: FileKind?, limit: Int): List<VaultEntry>
+    suspend fun search(likePattern: String, kind: FileKind?, scopePath: String?, limit: Int): List<VaultEntry>
 
     @Query(
         """
