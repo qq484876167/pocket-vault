@@ -76,4 +76,7 @@ dependencies {
     androidTestImplementation("androidx.test:rules:1.6.1")
     androidTestImplementation("androidx.test:core-ktx:1.6.1")
     androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    // 假 provider 跑在测试包自己的进程里（不是平时那个"应用+测试"同进程），
+    // 而那个进程的 APK 默认不含 Kotlin 运行时，实例化即 ClassNotFoundException: kotlin.jvm.internal.Intrinsics
+    androidTestImplementation("org.jetbrains.kotlin:kotlin-stdlib:2.0.21")
 }
