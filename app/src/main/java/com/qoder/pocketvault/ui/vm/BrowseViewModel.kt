@@ -146,7 +146,8 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
                     files += value.written
                     if (value.partial) failures += "${archive.name}（中途失败：${value.error}）"
                     else if (value.skipped > 0 || value.renamed > 0) {
-                        failures += "${archive.name}（跳过 ${value.skipped}、改名 ${value.renamed}）"
+                        failures += "${archive.name}（跳过 ${value.skipped}、改名 ${value.renamed}" +
+                            (value.refusalNote?.let { "，$it" } ?: "") + "）"
                     }
                 },
                 onFailure = { failures += "${archive.name}（${it.userMessage()}）" },

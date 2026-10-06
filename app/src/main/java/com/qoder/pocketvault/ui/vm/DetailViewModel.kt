@@ -301,6 +301,7 @@ class DetailViewModel(
         if (summary.renamed > 0) append("；改名 ${summary.renamed} 项")
         if (summary.overwritten > 0) append("；覆盖 ${summary.overwritten} 项（原件已移入回收站，可还原）")
         if (summary.skipped > 0) append("；跳过 ${summary.skipped} 项")
+        summary.refusalNote?.let { append("（$it）") }
         if (summary.skippedLinks > 0) append("；链接类 ${summary.skippedLinks} 项未落盘")
         if (summary.partial) append("；中途中断：${summary.error}")
     }
