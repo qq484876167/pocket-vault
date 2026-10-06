@@ -274,7 +274,9 @@ fun ArchiveCard(
         if (state.items.isNotEmpty()) {
             Spacer(Modifier.height(12.dp))
             Text("包内 ${state.items.size} 项", style = MaterialTheme.typography.labelLarge)
-            ArchiveListing.visible(state.items, collapsed, shown).forEach { item ->
+            val visibleItems = ArchiveListing.visible(state.items, collapsed, shown)
+            val rest = ArchiveListing.restCount(state.items, collapsed, shown)
+            visibleItems.forEach { item ->
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -312,8 +314,8 @@ fun ArchiveCard(
                     )
                 }
             }
-            if (shown < state.items.size) {
-                VaultButton("再显示 ${state.items.size - shown} 项", filled = false) { shown += PAGE_SIZE }
+            if (rest > 0) {
+                VaultButton("再显示 $rest 项", filled = false) { shown += PAGE_SIZE }
             }
         } else if (!askPassword && state.error == null && !state.loading) {
             Text("这个包里没有可显示的条目。", style = MaterialTheme.typography.bodySmall)
@@ -538,10 +540,24 @@ private object ArchiveListing {
         val out = ArrayList<ArchiveItem>(minOf(limit, items.size))
         for (item in items) {
             if (out.size >= limit) break
-            val hidden = collapsed.any { prefix -> item.displayName != prefix && item.displayName.startsWith("$prefix/") }
+            val hidden = isCollapsedUnder(item, collapsed)
             if (!hidden) out += item
         }
         return out
+    }
+
+    private fun isCollapsedUnder(item: ArchiveItem, collapsed: Set<String>): Boolean =
+        collapsed.any { prefix -> item.displayName != prefix && item.displayName.startsWith("$prefix/") }
+
+    /** 折叠之后还剩多少条没露出来：以前用 state.items.size - shown，折叠后文案虚高、按钮也不该出现。 */
+    fun restCount(items: List<ArchiveItem>, collapsed: Set<String>, shown: Int): Int {
+        var taken = 0
+        var rest = 0
+        for (item in items) {
+            if (isCollapsedUnder(item, collapsed)) continue
+            if (taken < shown) taken++ else rest++
+        }
+        return rest
     }
 }
 

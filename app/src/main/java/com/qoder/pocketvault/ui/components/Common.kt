@@ -50,6 +50,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -103,7 +104,11 @@ fun rememberEntryFile(entry: VaultEntry?): File? {
 @Composable
 fun Thumb(entry: VaultEntry, size: Int, modifier: Modifier = Modifier) {
     val file = rememberEntryFile(entry)
-    val canRender = entry.kind == FileKind.IMAGE && file != null
+    // physicalFile() 只做字符串拼接、从不查磁盘，所以"索引有、文件已经没了"必须自己 stat 一次；
+    // 再配合 onError 兜住"文件在但内容坏了"，否则这两种都是一片空白，看不出是图片
+    val exists = remember(file?.path) { file != null && file.length() > 0L }
+    var loadFailed by remember(file?.path) { mutableStateOf(false) }
+    val canRender = entry.kind == FileKind.IMAGE && exists && !loadFailed
     Box(
         modifier = modifier
             .size(size.dp)
@@ -120,6 +125,7 @@ fun Thumb(entry: VaultEntry, size: Int, modifier: Modifier = Modifier) {
                 contentDescription = entry.name,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
+                onError = { loadFailed = true },
             )
 
             else -> Icon(

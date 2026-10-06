@@ -41,6 +41,9 @@ enum class ArchiveCapability {
 
     /** 本应用处理不了（rar / cbr / iso / zst / lz4 等），界面必须给出"用其他应用打开" */
     UNSUPPORTED,
+
+    /** 格式是支持的，但这个文件本身读不出来（损坏 / 截断）：不能报成"格式不支持" */
+    BROKEN,
 }
 
 /** 按扩展名归类。注意 .tar.gz 必须在 .gz 之前判断，否则会被当成单文件 gzip。 */
@@ -503,7 +506,7 @@ internal class SevenZArchiveReader(file: File, private val password: String?) : 
                 openError ?: IOException("未知原因"),
                 password,
                 knownEncrypted = !password.isNullOrEmpty(),
-            ) is ArchiveFailure.Broken -> ArchiveCapability.UNSUPPORTED
+            ) is ArchiveFailure.Broken -> ArchiveCapability.BROKEN
             else -> ArchiveCapability.PASSWORD_REQUIRED
         }
 

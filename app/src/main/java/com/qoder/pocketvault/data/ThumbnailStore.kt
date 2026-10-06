@@ -46,34 +46,40 @@ class ThumbnailStore(context: Context, private val repo: VaultRepository) {
         }
         if (frame == null) return null
 
+        val tmp = File(dir, cacheFile.name + ".part")
+        var sized: Bitmap? = null
         return try {
             val width = frame.width.coerceAtLeast(1)
             val scale = TARGET_WIDTH.toFloat() / width
-            val sized = if (scale < 1f) {
+            val scaled = if (scale < 1f) {
                 Bitmap.createScaledBitmap(
                     frame,
                     TARGET_WIDTH,
                     (frame.height * scale).toInt().coerceAtLeast(1),
                     true
-                ).also { if (it !== frame) frame.recycle() }
+                )
             } else {
                 frame
             }
-            val tmp = File(dir, cacheFile.name + ".part")
-            FileOutputStream(tmp).use { out ->
-                val ok = sized.compress(Bitmap.CompressFormat.JPEG, 72, out)
+            sized = scaled
+            val ok = FileOutputStream(tmp).use { out ->
+                val compressed = scaled.compress(Bitmap.CompressFormat.JPEG, 72, out)
                 out.flush()
-                if (!ok) return null
+                compressed
             }
-            if (sized !== frame) sized.recycle()
-            if (!tmp.renameTo(cacheFile)) {
-                runCatching { tmp.delete() }
-                return null
+            when {
+                !ok -> null
+                !tmp.renameTo(cacheFile) -> null
+                else -> cacheFile
             }
-            cacheFile
         } catch (e: Exception) {
             Log.w(TAG, "写缩略图失败: ${entry.name}", e)
             null
+        } finally {
+            // 中途失败留下的 .part 以前没人清：设置页统计到的缓存占用就是这些残留
+            runCatching { if (tmp.exists()) tmp.delete() }
+            runCatching { frame.recycle() }
+            if (sized != null && sized !== frame) runCatching { sized.recycle() }
         }
     }
 
