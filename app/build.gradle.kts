@@ -33,10 +33,6 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
-
-    // 仪器化测试用"应用 + 测试"合成单 APK：假 DocumentsProvider 才能和被测代码同进程，
-    // 测试才读得到它记录的删除轨迹。发布的包里没有这些。
-    experimentalProperties["android.experimental.self-instrumenting"] = true
 }
 
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
