@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -153,6 +154,7 @@ fun FolderScreen(vm: FolderViewModel) {
     val viewMode by vm.viewMode.collectAsStateWithLifecycle()
     val options by vm.options.collectAsStateWithLifecycle()
     val path by vm.currentDir.collectAsStateWithLifecycle()
+    val folderId by vm.folderId.collectAsStateWithLifecycle()
     val navigator = LocalNavigator.current
     var sortMenu by remember { mutableStateOf(false) }
 
@@ -207,6 +209,14 @@ fun FolderScreen(vm: FolderViewModel) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
                         modifier = Modifier.weight(1f),
+                    )
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = "在本目录内搜索",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .tappable { navigator?.openSearch(folderId) }
+                            .padding(horizontal = 8.dp),
                     )
                     Box {
                         Text(
@@ -263,7 +273,9 @@ fun SearchScreen(vm: SearchViewModel) {
     val query by vm.query.collectAsStateWithLifecycle()
     val results by vm.results.collectAsStateWithLifecycle()
     val filter by vm.kindFilter.collectAsStateWithLifecycle()
+    val scope by vm.scope.collectAsStateWithLifecycle()
     val navigator = LocalNavigator.current
+    val scopeName = scope?.name
 
     BrowserHost(
         vm = vm,
@@ -275,7 +287,7 @@ fun SearchScreen(vm: SearchViewModel) {
                 OutlinedTextField(
                     value = query,
                     onValueChange = vm::updateQuery,
-                    label = { Text("在文件库内搜索名称") },
+                    label = { Text(if (scopeName == null) "在全文件库内搜索名称" else "在「$scopeName」内搜索名称") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -286,6 +298,10 @@ fun SearchScreen(vm: SearchViewModel) {
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    if (scope != null) {
+                        // 范围标签本身就是清除入口：点一下回到全库搜索
+                        FilterChip("范围：$scopeName（含子目录）✕", true) { vm.clearScope() }
+                    }
                     FilterChip("全部类型", filter == null) { vm.setKindFilter(null) }
                     listOf(FileKind.IMAGE, FileKind.VIDEO, FileKind.AUDIO, FileKind.DOCUMENT, FileKind.ARCHIVE).forEach { kind ->
                         FilterChip(kind.label, filter == kind) { vm.setKindFilter(kind) }
@@ -294,7 +310,11 @@ fun SearchScreen(vm: SearchViewModel) {
             }
         },
         emptyTitle = if (query.isBlank()) "输入名称开始搜索" else "没有找到「$query」",
-        emptyHint = "搜索覆盖所有层级的文件名；输入完整关键字还能按类型筛选。",
+        emptyHint = if (scopeName == null) {
+            "搜索覆盖所有层级的文件名；输入完整关键字还能按类型筛选。"
+        } else {
+            "只搜「$scopeName」及其所有子目录；点上面的范围标签可以回到全库搜索。"
+        },
         onOpen = { entry ->
             if (openInViewer(entry)) navigator?.openViewer(entry.id) else navigator?.openDetail(entry.id)
         },

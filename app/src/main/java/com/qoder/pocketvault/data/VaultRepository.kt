@@ -439,11 +439,30 @@ class VaultRepository(
 
     suspend fun setFavorite(id: Long, favorite: Boolean) = withContext(Dispatchers.IO) { dao.setFavorite(id, favorite) }
 
-    suspend fun search(term: String, kind: FileKind?, limit: Int = 400): List<VaultEntry> =
-        withContext(Dispatchers.IO) {
-            val pattern = escapeLike(term.trim())
-            if (pattern.isEmpty()) emptyList() else dao.search(pattern, kind, limit)
-        }
+    /**
+     * 按名称搜索。[withinRelativePath] 为空时是全库搜索；给定时只搜该目录及其**所有子目录**
+     * ——relativePath 是 parentId 链的缓存视图，所以一次前缀匹配就能覆盖整棵子树。
+     */
+    suspend fun search(
+        term: String,
+        kind: FileKind?,
+        withinRelativePath: String? = null,
+        limit: Int = 400,
+    ): List<VaultEntry> = withContext(Dispatchers.IO) {
+        val pattern = escapeLike(term.trim())
+        if (pattern.isEmpty()) return@withContext emptyList()
+        val scope = withinRelativePath?.takeIf { it.isNotBlank() }?.let { it.trim('/') + "/" }
+        dao.search(pattern, kind, scope, limit)
+    }
+
+    /**
+     * 目录当前路径对应的行 id。搜索范围要靠 id 在路由里传，
+     * 路径是用户任意起的名字（可能含 % # ? /），拼进 URI 再解出来容易出错。
+     */
+    suspend fun folderIdFor(relativePath: String): Long = withContext(Dispatchers.IO) {
+        val clean = VaultPaths.normalizeRelative(relativePath)
+        if (clean.isEmpty()) ROOT_ID else dao.byPath(clean)?.id ?: ROOT_ID
+    }
 
     /**
      * 应用内查看时的浏览序列：同一文件夹内同一类型的全部条目，按中文拼音排序。
