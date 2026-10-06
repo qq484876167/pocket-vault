@@ -13,8 +13,8 @@ android {
         applicationId = "com.qoder.pocketvault"
         minSdk = 29
         targetSdk = 35
-        versionCode = 14
-        versionName = "1.12.0"
+        versionCode = 15
+        versionName = "1.12.1"
     }
 
     buildTypes {
