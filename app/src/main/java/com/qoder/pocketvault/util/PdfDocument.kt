@@ -5,7 +5,9 @@ import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import android.util.LruCache
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.withLock
 import java.io.Closeable
 import java.io.File
@@ -34,12 +36,12 @@ class PdfDocument private constructor(
      * 渲染第 [index] 页；[targetWidthPx] 一般就是屏幕像素宽度的 1.5 倍。
      * 异常一律抛给调用方——把真实原因显示在界面上比在这里吞掉有用得多。
      */
-    suspend fun page(index: Int, targetWidthPx: Int): Bitmap? {
-        if (index < 0 || index >= pageCount) return null
+    suspend fun page(index: Int, targetWidthPx: Int): Bitmap? = withContext(Dispatchers.IO) {
+        if (index < 0 || index >= pageCount) return@withContext null
         val width = targetWidthPx.coerceIn(360, RENDER_WIDTH)
         val key = "$index@$width"
-        cache.get(key)?.takeIf { !it.isRecycled }?.let { return it }
-        return renderLock.withLock {
+        cache.get(key)?.takeIf { !it.isRecycled }?.let { return@withContext it }
+        renderLock.withLock {
             cache.get(key)?.takeIf { !it.isRecycled }?.let { return@withLock it }
             val rendered = renderAt(index, width)
             cache.put(key, rendered)
@@ -86,15 +88,18 @@ class PdfDocument private constructor(
         private val CACHE_BYTES: Int =
             (Runtime.getRuntime().maxMemory() / 8).coerceIn(24L shl 20, 96L shl 20).toInt()
 
-        fun open(file: File): PdfDocument? = runCatching {
-            val descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-            val renderer = try {
-                PdfRenderer(descriptor)
-            } catch (e: Exception) {
-                descriptor.close()
-                throw e
-            }
-            PdfDocument(descriptor, renderer)
-        }.getOrNull()
+        /** 打开也在 IO 上：ParcelFileDescriptor + PdfRenderer 都要读盘。 */
+        suspend fun open(file: File): PdfDocument? = withContext(Dispatchers.IO) {
+            runCatching {
+                val descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+                val renderer = try {
+                    PdfRenderer(descriptor)
+                } catch (e: Exception) {
+                    descriptor.close()
+                    throw e
+                }
+                PdfDocument(descriptor, renderer)
+            }.getOrNull()
+        }
     }
 }

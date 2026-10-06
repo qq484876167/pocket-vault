@@ -369,6 +369,9 @@ class VaultRepository(
                         trashOriginParentId = entry.parentId,
                         trashedAtMillis = now,
                         trashedVia = entry.id,
+                        // 判重只针对在用条目：进回收站就把签名让出来，
+                        // 不然"删掉再同步同一目录"会因为这条残留签名判重失效
+                        sourceSignature = null,
                         relativePath = "$TRASH_PATH_PREFIX/${entry.id}/${entry.relativePath}",
                     )
                 )
@@ -395,7 +398,12 @@ class VaultRepository(
                 val dest = paths.fileOf(rel)
                 dest.parentFile?.mkdirs()
                 val trashFile = File(paths.trashDir, viaId.toString())
-                if (trashFile.exists() && !trashFile.renameTo(dest)) {
+                if (!trashFile.exists()) {
+                    // 垃圾桶里那份实体文件已经没了（手工删了或被系统清掉）：
+                    // 继续写 ACTIVE 只会留下一个"点开即失败"的幽灵条目，索引永远对不上磁盘
+                    throw IllegalStateException("回收站里的文件已经不在了，无法恢复：${entry.name}")
+                }
+                if (!trashFile.renameTo(dest)) {
                     throw IllegalStateException("恢复失败：${entry.name}")
                 }
                 dao.update(

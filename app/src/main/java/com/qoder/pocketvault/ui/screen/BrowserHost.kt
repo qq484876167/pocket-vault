@@ -84,7 +84,6 @@ fun BrowserHost(
     val selection by vm.selection.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
-    val currentDir by remember(vm) { vm.currentDir }.collectAsStateWithLifecycle()
     val snackbar = LocalSnackbar.current
 
     var sheetMode by remember { mutableStateOf(SheetMode.NONE) }
@@ -253,10 +252,15 @@ fun BrowserHost(
     // 移动文件夹时，它自己与所有后代目录都不能当目标：在导航过程中就标灰，
     // 而不是等用户点了才由 repo.move() 抛异常。复制没有这个限制（复制到自己是产生副本）。
     var moveBlocked by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    LaunchedEffect(sheetMode, selection, entries, currentDir) {
+    LaunchedEffect(sheetMode, selection, entries) {
         if (sheetMode == SheetMode.MOVE) {
-            val sources = entries.filter { it.id in selection && it.isFolder }.map { it.relativePath }
-            moveBlocked = vm.folderTargets.forbiddenForMove(sources) + (currentDir to "内容已经在这个目录里")
+            val selected = entries.filter { it.id in selection }
+            val sources = selected.filter { it.isFolder }.map { it.relativePath }
+            // "已经在这个目录里"要按选中项真正的父目录算：文件库 / 搜索 / 回收站页的
+            // currentDir 是常量 ""，拿它当依据会把库根目录误判成非法目标，
+            // 结果就是再也没法把文件移动到根目录。
+            val ownDirs = selected.map { parentDirOf(it) }.distinct().associateWith { "内容已经在这个目录里" }
+            moveBlocked = vm.folderTargets.forbiddenForMove(sources) + ownDirs
         }
     }
 
@@ -387,6 +391,10 @@ private fun ImportMenuItem(label: String, icon: ImageVector, onClick: () -> Unit
         onClick = onClick,
     )
 }
+
+/** 条目所在的逻辑目录（根目录是空串）。 */
+private fun parentDirOf(entry: VaultEntry): String =
+    entry.relativePath.trim('/').substringBeforeLast('/', "")
 
 /** BrowseViewModel 的 currentDir 是 StateFlow，这里为对话框标题取快照。 */
 @Composable

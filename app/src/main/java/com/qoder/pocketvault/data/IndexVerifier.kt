@@ -62,6 +62,18 @@ class IndexVerifier(
                     stale += collectSubtree(folder.id) + folder.id
                 }
             }
+            // 文件也得逐个核对：只查目录的话，"索引里有、磁盘上没这个文件"的幽灵条目
+            // 永远发现不了（回收站实体被手工删掉后恢复失败就是这种），点开必然失败。
+            var droppedFiles = 0
+            for (file in dao.allActiveFiles()) {
+                if (file.id in stale) continue
+                // 判不出来（路径异常）时宁可留着，不误删用户的索引
+                val missing = runCatching { !paths.fileOf(file.relativePath).isFile }.getOrDefault(false)
+                if (missing) {
+                    stale += file.id
+                    droppedFiles++
+                }
+            }
             val doomed = stale.distinct()
             if (doomed.isNotEmpty()) {
                 dropped += doomed.size

@@ -121,7 +121,11 @@ interface VaultDao {
     @Query("SELECT COUNT(*) FROM entries WHERE state = 'ACTIVE' AND kind <> 'FOLDER'")
     suspend fun activeFileCount(): Int
 
-    @Query("SELECT * FROM entries WHERE sourceSignature = :signature LIMIT 1")
+    /**
+     * 判重只看 ACTIVE：条目进回收站后签名还在，如果不加 state 过滤，
+     * `LIMIT 1` 会稳定返回那条 TRASHED 记录，判重就失效了——反复同步同一目录会不断累积副本。
+     */
+    @Query("SELECT * FROM entries WHERE state = 'ACTIVE' AND sourceSignature = :signature ORDER BY id DESC LIMIT 1")
     suspend fun bySignature(signature: String): VaultEntry?
 
     @Query("SELECT relativePath FROM entries WHERE state = 'ACTIVE' AND kind = 'FOLDER' ORDER BY relativePath")
@@ -133,6 +137,10 @@ interface VaultDao {
 
     @Query("SELECT * FROM entries WHERE state = 'ACTIVE' AND kind = 'FOLDER'")
     suspend fun allFolders(): List<VaultEntry>
+
+    /** 对账用：ACTIVE 的非目录条目也要逐个核对磁盘，不然"索引有、文件无"的幽灵条目永远发现不了。 */
+    @Query("SELECT * FROM entries WHERE state = 'ACTIVE' AND kind <> 'FOLDER'")
+    suspend fun allActiveFiles(): List<VaultEntry>
 
     @Query("SELECT COUNT(*) FROM entries WHERE state = 'ACTIVE' AND kind = 'FOLDER'")
     suspend fun folderCount(): Int
