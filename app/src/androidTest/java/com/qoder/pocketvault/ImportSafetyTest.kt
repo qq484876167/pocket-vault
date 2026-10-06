@@ -60,7 +60,7 @@ class ImportSafetyTest {
 
     /** 验收 1：0 字节文件必须正常入库，而不是被谎报成"已存在"。 */
     @Test
-    fun zeroByteFilesAreImported() = runBlocking {
+    fun zeroByteFilesAreImported(): Unit = runBlocking {
         val tree = FakeTreeBuilder("safeImportA")
         tree.file("notes.txt", "第一轮同步内容\n".toByteArray())
         tree.file("empty.txt", ByteArray(0))
@@ -89,7 +89,7 @@ class ImportSafetyTest {
 
     /** 验收 2：导入 → 移入回收站 → 反复重新同步，库里只能有一份 ACTIVE。 */
     @Test
-    fun repeatedSyncDoesNotAccumulateCopies() = runBlocking {
+    fun repeatedSyncDoesNotAccumulateCopies(): Unit = runBlocking {
         val tree = FakeTreeBuilder("resyncB")
         tree.file("a.txt", "AAA".toByteArray())
         tree.file("empty.txt", ByteArray(0))
@@ -160,7 +160,7 @@ class ImportSafetyTest {
      * 旧签名只算 name+size，第二个会被静默丢掉。
      */
     @Test
-    fun sameNameSameSizeFromDifferentSourcesBothImport() = runBlocking {
+    fun sameNameSameSizeFromDifferentSourcesBothImport(): Unit = runBlocking {
         val tree = FakeTreeBuilder("pickDsrc")
         val boxA = tree.dir("boxA")
         val boxB = tree.dir("boxB")

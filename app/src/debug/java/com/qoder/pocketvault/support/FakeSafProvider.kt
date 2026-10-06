@@ -63,7 +63,7 @@ class FakeSafProvider : ContentProvider() {
     private val deleteAttempts = mutableListOf<String>()
     private val deleteRequests = mutableListOf<String>()
 
-    private val columns = arrayOf(
+    private val allColumns = listOf(
         DocumentsContract.Document.COLUMN_DOCUMENT_ID,
         DocumentsContract.Document.COLUMN_DISPLAY_NAME,
         DocumentsContract.Document.COLUMN_MIME_TYPE,
@@ -71,32 +71,51 @@ class FakeSafProvider : ContentProvider() {
         DocumentsContract.Document.COLUMN_LAST_MODIFIED,
     )
 
+    /** 真实 provider 是按请求的 projection 出列的；全部返回五列的话，
+     *  调用方读第 0 列拿到的就不是它要的字段（displayNameOf 就拿到了 docId）。 */
+    private fun columnsOf(projection: Array<out String>?): List<String> =
+        if (projection.isNullOrEmpty()) allColumns else projection.toList()
+
+    private fun valueOf(node: Node, column: String): Any? = when (column) {
+        DocumentsContract.Document.COLUMN_DOCUMENT_ID -> node.docId
+        DocumentsContract.Document.COLUMN_DISPLAY_NAME -> node.name
+        DocumentsContract.Document.COLUMN_MIME_TYPE ->
+            if (node.isDir) DocumentsContract.Document.MIME_TYPE_DIR else "application/octet-stream"
+        DocumentsContract.Document.COLUMN_SIZE -> node.bytes.size.toLong()
+        DocumentsContract.Document.COLUMN_LAST_MODIFIED -> node.modifiedAt
+        else -> null
+    }
+
     override fun onCreate(): Boolean = true
 
     // ------------------------------------------------------------ URI 形状
 
-    /** [Pair] 的 second 表示这是"列子项"还是"看单个文档"。 */
+    /**
+     * [Pair] 的 second 表示这是"列子项"还是"看单个文档"。
+     *
+     * 真实形状是从 CI 日志里抄回来的：`buildChildDocumentsUriUsingTree` 生成的是
+     * `/tree/<根>/document/<父>/children`，不是我以为的 `/tree/<根>/children/<父>`；
+     * 解析错会让列子项一律返回空，于是所有"从文件夹导入"的用例都以为目录是空的。
+     * 两种形状都认，免得哪天框架又换回去。
+     */
     private fun parse(uri: Uri): Pair<String, Boolean>? {
         val parts = uri.pathSegments
         if (parts.isEmpty() || parts[0] != "tree") return null
         return when {
-            parts.size >= 4 && parts[parts.size - 2] == "children" -> Uri.decode(parts.last()) to true
-            parts.size >= 4 && parts[parts.size - 2] == "document" -> Uri.decode(parts.last()) to false
+            parts.last() == "children" && parts.size >= 3 -> Uri.decode(parts[parts.size - 2]) to true
+            parts.size >= 3 && parts[1] == "children" -> Uri.decode(parts.last()) to true
+            parts.size >= 3 && parts[parts.size - 2] == "document" -> Uri.decode(parts.last()) to false
             parts.size == 2 -> parts[1] to true          // /tree/<rootId>：把根当父目录
             else -> null
         }
     }
 
-    private fun row(node: Node) = arrayOf<Any?>(
-        node.docId,
-        node.name,
-        if (node.isDir) DocumentsContract.Document.MIME_TYPE_DIR else "application/octet-stream",
-        node.bytes.size.toLong(),
-        node.modifiedAt,
-    )
-
-    private fun cursorOf(list: List<Node>) =
-        MatrixCursor(columns, list.size).also { cursor -> list.forEach { cursor.addRow(row(it)) } }
+    private fun cursorOf(list: List<Node>, projection: Array<out String>?): MatrixCursor {
+        val cols = columnsOf(projection)
+        return MatrixCursor(cols.toTypedArray(), list.size).also { cursor ->
+            list.forEach { node -> cursor.addRow(cols.map { valueOf(node, it) }.toTypedArray()) }
+        }
+    }
 
     private fun liveChildren(parentDocId: String): List<Node> =
         nodes.values.filter { it.parent == parentDocId && !it.deleted }
@@ -125,10 +144,10 @@ class FakeSafProvider : ContentProvider() {
                     throw IOException("simulated provider failure on $docId")
                 }
             }
-            return cursorOf(liveChildren(docId))
+            return cursorOf(liveChildren(docId), projection)
         }
         val node = nodes[docId]?.takeUnless { it.deleted } ?: return null
-        return cursorOf(listOf(node))
+        return cursorOf(listOf(node), projection)
     }
 
     /** 只给 URI，所以把字节写成真实临时文件再交出去；读链路和真 provider 一样过磁盘。 */

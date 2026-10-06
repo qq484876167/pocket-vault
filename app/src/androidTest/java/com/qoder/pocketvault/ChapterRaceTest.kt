@@ -75,7 +75,7 @@ class ChapterRaceTest {
      * 起始章节是第一章，所以第一下点第二章是有效跳转（同章早退，不会把竞态窗口抹掉）。
      */
     @Test
-    fun lateBigChapterLoadCannotOverwriteSmallChapter() = runBlocking {
+    fun lateBigChapterLoadCannotOverwriteSmallChapter(): Unit = runBlocking {
         val entryId = importNovel("raceBook", novelBytes())
         val vm = ViewerViewModel(graph, entryId)
         val book = awaitBook(vm)
@@ -110,7 +110,7 @@ class ChapterRaceTest {
 
     /** 反过来：大 → 小 也应该停在小章（这是最直觉的"先点后大再点小的"点法）。 */
     @Test
-    fun bigThenSmallAlsoSettlesOnSmall() = runBlocking {
+    fun bigThenSmallAlsoSettlesOnSmall(): Unit = runBlocking {
         val entryId = importNovel("raceBook2", novelBytes())
         val vm = ViewerViewModel(graph, entryId)
         val book = awaitBook(vm)

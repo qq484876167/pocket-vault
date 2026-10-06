@@ -68,11 +68,16 @@ class PdfDocument private constructor(
     /**
      * 关闭也要过同一把锁：退出时可能正好有一页在 renderAt（阻塞、不可取消），
      * 和 renderer.close() 并发会抛异常甚至 native 崩溃。
+     *
+     * 显式写成语句体：用表达式体的话返回值会被推导成最后一个 `runCatching` 的
+     * `Result<Unit>`，调用方（以及 JUnit 的 @Test 校验）看到的就不是 Unit 了。
      */
-    suspend fun closeAsync() = renderLock.withLock {
-        cache.evictAll()
-        runCatching { renderer.close() }
-        runCatching { descriptor.close() }
+    suspend fun closeAsync() {
+        renderLock.withLock {
+            cache.evictAll()
+            runCatching { renderer.close() }
+            runCatching { descriptor.close() }
+        }
     }
 
     companion object {
