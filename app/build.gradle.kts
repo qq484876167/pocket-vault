@@ -15,6 +15,7 @@ android {
         targetSdk = 35
         versionCode = 15
         versionName = "1.12.1"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -32,6 +33,10 @@ android {
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
     packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+
+    // 仪器化测试用"应用 + 测试"合成单 APK：假 DocumentsProvider 才能和被测代码同进程，
+    // 测试才读得到它记录的删除轨迹。发布的包里没有这些。
+    experimentalProperties["android.experimental.self-instrumenting"] = true
 }
 
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
@@ -66,4 +71,13 @@ dependencies {
     // public domain，都与本项目的 GPL-3.0 兼容。刻意不引入 rar/junrar：UnRAR 是限制性许可。
     implementation("org.apache.commons:commons-compress:1.26.2")
     implementation("org.tukaani:xz:1.10")
+
+    // ---- 仪器化测试：只在 CI 的模拟器上跑，不进 APK、不参与运行时许可判定 ----
+    androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
+    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }
