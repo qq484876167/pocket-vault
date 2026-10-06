@@ -70,6 +70,12 @@ class DetailViewModel(
     private val _archive = MutableStateFlow(ArchiveUiState())
     val archive: StateFlow<ArchiveUiState> = _archive
 
+    /** 当前交给界面看的那一份预览临时文件（缓存目录里的，不属于库内容）。 */
+    private var lastPreview: File? = null
+
+    /** 上次会话被杀时可能留下过预览文件，进入压缩包界面时先扫一次。 */
+    private var previewCacheSwept = false
+
     private val _folders = MutableStateFlow<List<Pair<String, String>>>(emptyList())
     /** 库内可当解压目标的文件夹。 */
     val folders: StateFlow<List<Pair<String, String>>> = _folders
@@ -179,20 +185,23 @@ class DetailViewModel(
     }
 
     /**
-     * 解压前的一轮核对：目标位置、同名冲突数、磁盘空间够不够。
+     * 解压前的一轮核对：真实落点、同名项数量、磁盘空间够不够。
      * 结果交给界面决定要不要弹「合并/改名/取消」与「覆盖/保留两者/跳过」。
      */
     fun planExtract(target: ExtractTarget, specificFolder: String?, password: String?, onReady: (ExtractPlan) -> Unit) {
         val file = physicalFile() ?: return
         val parent = containingFolder()
-        val plannedFolder = if (target == ExtractTarget.NEW_FOLDER) joinRelative(parent, archiveStem(file.name)) else null
         val dest = when (target) {
             ExtractTarget.CURRENT_FOLDER, ExtractTarget.NEW_FOLDER -> parent
             ExtractTarget.SPECIFIC -> VaultPaths.normalizeRelative(specificFolder ?: parent).ifEmpty { parent }
         }
+        // 与 extract() 的落点保持一致：同名新文件夹（无论新建还是合并）都落进 stem 里，
+        // 选「自动改名」时落点是空目录，冲突数天然是 0，界面用 suggestedFolder 说明。
+        val landing = if (target == ExtractTarget.NEW_FOLDER) joinRelative(parent, archiveStem(file.name)) else dest
+        val listed = _archive.value.items.ifEmpty { null }
         viewModelScope.launch {
             val plan = runCatching {
-                graph.archives.plan(file, dest, password, ConflictPolicy.RENAME, graph.paths.usableBytes())
+                graph.archives.plan(file, dest, password, graph.paths.usableBytes(), listed, landing)
             }
             plan.fold(
                 onSuccess = { value ->
@@ -217,33 +226,34 @@ class DetailViewModel(
         if (_busy.value) return
         val file = physicalFile() ?: return
         val parent = containingFolder()
+        // 占位必须在第一个挂起点之前，否则极快的两次点击都能通过上面的 _busy 检查
+        _busy.value = true
         viewModelScope.launch {
-            val folderName: String?
-            val dest: String
-            when (target) {
-                ExtractTarget.NEW_FOLDER -> {
-                    val preferred = joinRelative(parent, archiveStem(file.name))
-                    if (!mergeIntoExisting && graph.archives.folderExists(preferred)) {
-                        dest = parent
-                        folderName = graph.archives.freeFolderPath(parent, archiveStem(file.name))
-                            .substringAfterLast('/')
-                    } else {
-                        dest = parent
-                        folderName = archiveStem(file.name)
+            val decision = runCatching {
+                when (target) {
+                    ExtractTarget.NEW_FOLDER -> {
+                        val preferred = joinRelative(parent, archiveStem(file.name))
+                        val name = if (!mergeIntoExisting && graph.archives.folderExists(preferred)) {
+                            graph.archives.freeFolderPath(parent, archiveStem(file.name)).substringAfterLast('/')
+                        } else {
+                            archiveStem(file.name)
+                        }
+                        parent to name
                     }
-                }
 
-                ExtractTarget.CURRENT_FOLDER -> {
-                    dest = parent
-                    folderName = null
-                }
+                    ExtractTarget.CURRENT_FOLDER -> parent to null
 
-                ExtractTarget.SPECIFIC -> {
-                    dest = VaultPaths.normalizeRelative(specificFolder ?: parent).ifEmpty { parent }
-                    folderName = null
+                    ExtractTarget.SPECIFIC ->
+                        VaultPaths.normalizeRelative(specificFolder ?: parent).ifEmpty { parent } to null
                 }
             }
-            runExtraction(file, dest, folderName, password, policy)
+            decision.fold(
+                onSuccess = { (dest, folderName) -> runExtraction(file, dest, folderName, password, policy) },
+                onFailure = {
+                    _busy.value = false
+                    _message.value = it.userMessage()
+                },
+            )
         }
     }
 
@@ -254,7 +264,6 @@ class DetailViewModel(
         password: String?,
         policy: ConflictPolicy,
     ) {
-        _busy.value = true
         _archive.value = _archive.value.copy(progress = 0L to 0L, error = null)
         viewModelScope.launch {
             val result = runCatching {
@@ -290,7 +299,7 @@ class DetailViewModel(
     private fun summaryMessage(summary: ExtractSummary): String = buildString {
         append("已解压 ${summary.written} 个文件到 ${summary.destRelativePath.ifEmpty { "根目录" }}")
         if (summary.renamed > 0) append("；改名 ${summary.renamed} 项")
-        if (summary.overwritten > 0) append("；覆盖 ${summary.overwritten} 项")
+        if (summary.overwritten > 0) append("；覆盖 ${summary.overwritten} 项（原件已移入回收站，可还原）")
         if (summary.skipped > 0) append("；跳过 ${summary.skipped} 项")
         if (summary.skippedLinks > 0) append("；链接类 ${summary.skippedLinks} 项未落盘")
         if (summary.partial) append("；中途中断：${summary.error}")
@@ -350,6 +359,14 @@ class DetailViewModel(
         if (_busy.value) return
         _busy.value = true
         viewModelScope.launch {
+            if (!previewCacheSwept) {
+                previewCacheSwept = true
+                // 上次会话被杀时可能留下过预览文件，先整目录扫一次
+                runCatching { graph.archives.clearPreviewCache() }
+            }
+            // 上一次预览的文件已经不会再被界面引用了，先收掉，缓存里最多只留当前这一份
+            lastPreview?.let { runCatching { it.delete() } }
+            lastPreview = null
             val result = runCatching {
                 graph.archives.extractToTemp(file, item, password?.ifBlank { null }, item.displayName)
             }
@@ -362,6 +379,7 @@ class DetailViewModel(
                 onReady(EntryPreview.Error("这一类条目不能预览"))
                 return@launch
             }
+            lastPreview = temp
             val kind = FileKind.classify(item.displayName, null)
             onReady(
                 when (kind) {
@@ -447,6 +465,13 @@ class DetailViewModel(
 
     fun consumeMessage() {
         _message.value = null
+    }
+
+    /** 离开详情页就把预览缓存清掉：这些文件不属于库内容，留着只是占缓存。 */
+    override fun onCleared() {
+        runCatching { lastPreview?.delete() }
+        lastPreview = null
+        graph.ioScope.launch { runCatching { graph.archives.clearPreviewCache() } }
     }
 
     private fun mutate(successHint: String, block: suspend () -> String?) {

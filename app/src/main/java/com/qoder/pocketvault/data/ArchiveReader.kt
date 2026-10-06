@@ -350,15 +350,24 @@ internal class TarArchiveReader(
         val safe = ArchiveEntryNames.sanitize(name) ?: return null
         return ArchiveItem(
             storedName = name,
-        displayName = safe,
-        isDirectory = isDirectory,
-        sizeBytes = size,
-        compressedBytes = size,
-        encrypted = false,
-        // 符号链接 / 硬链接 / 设备文件：列出来，但绝不落盘（链接可以指向库外）
-        regularFile = isFile,
+            displayName = safe,
+            isDirectory = isDirectory,
+            sizeBytes = size,
+            // tar 头里只有未压缩大小：给 -1，界面就不致于拿原大小冒充"压缩后"
+            compressedBytes = -1,
+            encrypted = false,
+            // 符号链接 / 硬链接 / 设备文件：列出来，但绝不落盘（链接可以指向库外）
+            regularFile = isPlainFile,
         )
     }
+
+    /**
+     * commons 的 `isFile()` 只把目录和名字以 / 结尾的排除掉，**符号链接、硬链接、设备文件
+     * 一样返回 true**，所以"绝不落盘"的门禁必须自己把非普通文件列全。
+     */
+    private val TarArchiveEntry.isPlainFile: Boolean
+        get() = isFile && !isSymbolicLink && !isLink && !isCharacterDevice && !isBlockDevice && !isFIFO &&
+            !isSparse && !isPaxHeader && !isGlobalPaxHeader && !isGNULongNameEntry && !isGNULongLinkEntry
 
     override fun close() = Unit
 }
@@ -444,7 +453,8 @@ internal class SevenZArchiveReader(file: File, password: String?) : ArchiveReade
             displayName = safe,
             isDirectory = isDirectory,
             sizeBytes = size,
-            compressedBytes = size,
+            // SevenZArchiveEntry 没有可靠的压缩后大小（只有 isEncrypted/hasStream），给 -1
+            compressedBytes = -1,
             encrypted = false,
             regularFile = hasStream() && !isDirectory,
         )

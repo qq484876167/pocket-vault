@@ -45,6 +45,8 @@ import com.qoder.pocketvault.core.formatBytes
 import com.qoder.pocketvault.data.ArchiveCapability
 import com.qoder.pocketvault.data.ArchiveItem
 import com.qoder.pocketvault.data.ConflictPolicy
+import com.qoder.pocketvault.data.ExtractPlan
+import com.qoder.pocketvault.data.ExtractSummary
 import com.qoder.pocketvault.data.db.VaultEntry
 import com.qoder.pocketvault.ui.LocalNavigator
 import com.qoder.pocketvault.ui.components.FilterChip
@@ -176,6 +178,13 @@ fun ArchiveCard(
                 FilterChip("跳过", policy == ConflictPolicy.SKIP) { policy = ConflictPolicy.SKIP }
             }
             Text("选一次，本次解压的全部条目都按这个来。", style = MaterialTheme.typography.bodySmall)
+            if (policy == ConflictPolicy.OVERWRITE) {
+                Text(
+                    "「覆盖」不会抹掉原件：被替换的那份进回收站，随时能还原。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                )
+            }
 
             plan?.let { value ->
                 Spacer(Modifier.height(8.dp))
@@ -361,8 +370,15 @@ fun ArchiveCard(
     if (folderConflictAsked && plan?.suggestedFolder != null) {
         AlertDialog(
             onDismissRequest = { folderConflictAsked = false },
-            title = { Text("目标位置已有同名文件夹") },
-            text = { Text("合并进现有文件夹、自动改名为「${plan.suggestedFolder.substringAfterLast('/')}」，还是取消？") },
+            title = { Text("目标位置已有同名项目") },
+            text = {
+                val renameTo = plan.suggestedFolder.substringAfterLast('/')
+                Text(
+                    "合并进去：该文件夹里已有同名 ${plan.conflictCount} 处，" +
+                        "会按上面「遇到同名文件」的选择处理。\n" +
+                        "改名为「$renameTo」：那是一个新建的空文件夹，解压不会产生任何同名冲突。",
+                )
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -386,17 +402,17 @@ fun ArchiveCard(
     }
 }
 
-private fun planLine(plan: com.qoder.pocketvault.data.ExtractPlan): String = buildString {
+private fun planLine(plan: ExtractPlan): String = buildString {
     append("${plan.fileCount} 个文件")
     if (plan.totalBytes >= 0) append(" · 约 ${formatBytes(plan.totalBytes)}")
-    if (plan.conflictCount > 0) append(" · 同名 ${plan.conflictCount} 处")
+    if (plan.conflictCount > 0) append(" · 落点里已有同名 ${plan.conflictCount} 处")
     if (plan.skippedLinkCount > 0) append(" · 链接 ${plan.skippedLinkCount} 项不会落盘")
 }
 
-private fun summaryLine(summary: com.qoder.pocketvault.data.ExtractSummary): String = buildString {
+private fun summaryLine(summary: ExtractSummary): String = buildString {
     append("已解压 ${summary.written} 个文件到 ${summary.destRelativePath.ifEmpty { "根目录" }}")
     if (summary.renamed > 0) append("；改名 ${summary.renamed} 项")
-    if (summary.overwritten > 0) append("；覆盖 ${summary.overwritten} 项")
+    if (summary.overwritten > 0) append("；覆盖 ${summary.overwritten} 项（原件在回收站）")
     if (summary.skipped > 0) append("；跳过 ${summary.skipped} 项")
     if (summary.skippedLinks > 0) append("；链接 ${summary.skippedLinks} 项未落盘")
 }
