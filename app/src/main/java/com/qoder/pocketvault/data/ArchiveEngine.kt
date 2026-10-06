@@ -2,7 +2,6 @@ package com.qoder.pocketvault.data
 
 import com.qoder.pocketvault.core.FileKind
 import com.qoder.pocketvault.core.VaultPaths
-import com.qoder.pocketvault.core.formatBytes
 import com.qoder.pocketvault.core.joinRelative
 import com.qoder.pocketvault.data.db.VaultEntry
 import java.io.File
@@ -102,26 +101,34 @@ class ArchiveEngine(private val repo: VaultRepository) {
     }
 
     /**
-     * 解压前的计划：给出条目数、字节总数、与目标目录的同名冲突数，
-     * 以及空间够不够。availableBytes 传 <=0 表示拿不到，此时不误报、放行。
+     * 解压前的计划：给出条目数、字节总数、与**真实落点**的同名项数量，以及空间够不够。
+     * 同名项数量与策略无关（界面按所选策略把它读成"会跳过/会另存/会覆盖 N 项"），
+     * availableBytes 传 <=0 表示拿不到，此时不误报、放行。
+     * [knownItems] 是界面已经列出来的条目，传进来可以省掉 tar 家族的第二次整包扫描。
+     * [landingDirRelativePath] 是真实落点（"同名新文件夹"时指那个文件夹），
+     * 不给就按 [destDirRelativePath] 算；同名文件夹是否存在仍然只看 [destDirRelativePath]。
      */
     suspend fun plan(
         archive: File,
         destDirRelativePath: String,
         password: String?,
-        policy: ConflictPolicy,
         availableBytes: Long,
+        knownItems: List<ArchiveItem>? = null,
+        landingDirRelativePath: String? = null,
     ): ExtractPlan = withContext(Dispatchers.IO) {
         requireReadable(archive)
         val dest = VaultPaths.normalizeRelative(destDirRelativePath)
+        // 冲突要按真实落点数：选"同名新文件夹"时落点是那个文件夹本身，而不是它的父目录
+        val conflictDir = VaultPaths.normalizeRelative(landingDirRelativePath ?: dest)
+        val budget = ExtractBudget.forVault()
         ArchiveReaders.open(archive, password).use { reader ->
-            val items = reader.entries()
+            // tar 家族列一次目录就要整包扫一遍，界面已经列过时直接把结果传进来复用
+            val items = knownItems ?: reader.entries()
             val files = items.filter { !it.isDirectory }
             val links = files.count { !it.regularFile }
-            val needToCheck = if (policy == ConflictPolicy.SKIP) files else files.filter { it.regularFile }
-            val conflicts = needToCheck.count { repo.entryAt(joinRelative(dest, it.displayName)) != null }
+            // 链接类条目根本不落盘，把它们算进"冲突"只会误导
+            val conflicts = files.count { it.regularFile && repo.entryAt(joinRelative(conflictDir, it.displayName)) != null }
             val required = reader.totalBytes(items)
-            val enough = availableBytes <= 0L || required < 0L || required <= availableBytes - SAFETY_MARGIN
             val folderName = VaultPaths.sanitizeName(archive.name.substringBeforeLast('.', archive.name))
             val preferred = joinRelative(dest, folderName)
             val alreadyThere = repo.entryAt(preferred) != null
@@ -135,7 +142,7 @@ class ArchiveEngine(private val repo: VaultRepository) {
                 needsPassword = reader.capability == ArchiveCapability.PASSWORD_REQUIRED,
                 requiredBytes = required,
                 availableBytes = availableBytes,
-                enoughSpace = enough,
+                enoughSpace = budget.refuseBeforeStart(required, availableBytes) == null,
             )
         }
     }
@@ -163,7 +170,8 @@ class ArchiveEngine(private val repo: VaultRepository) {
 
     /**
      * 解压整包到文件库内的某个目录，保留包内层级。
-     * [folderName] 非空时先在 dest 下建这个同名新文件夹（"解压到同名新文件夹"的默认行为），
+     * [folderName] 非空时落点是 dest 下的这个文件夹：不存在就新建（[ExtractSummary.createdFolder]
+     * 会标出来），已存在就把条目合并进去——两种情况都不会把文件倒在 dest 里。
      * 结果落点由返回的 [ExtractSummary.destRelativePath] 给出。
      */
     suspend fun extractToVault(
@@ -182,20 +190,31 @@ class ArchiveEngine(private val repo: VaultRepository) {
         var attempted = 0
         var dest = requested
         var createdFolder: String? = null
+        // 每次解压一份独立预算：累计字节与复查节奏都只在这一包里算
+        val budget = ExtractBudget.forVault()
 
         ArchiveReaders.open(archive, password).use { reader ->
             val all = reader.entries()
             // 先把账算完再动手：空间明显不够就拒绝开工，不留下解了一半的包
-            refuseIfNoSpace(reader.totalBytes(all))
+            budget.refuseBeforeStart(reader.totalBytes(all), repo.usableBytes())
+                ?.let { throw ArchiveOpenException(it) }
             if (!folderName.isNullOrBlank()) {
                 val target = joinRelative(requested, VaultPaths.sanitizeName(folderName))
-                // 已存在则按调用方决定好的"合并"处理，不再改名
-                if (repo.entryAt(target) == null) {
-                    repo.ensureFolderPath(target)
-                    createdFolder = target
+                val existing = repo.entryAt(target)
+                when {
+                    existing == null -> {
+                        repo.ensureFolderPath(target)
+                        createdFolder = target
+                    }
+                    // 同名的东西是个文件：不能当目录用，也不能默默把条目倒进父目录
+                    !existing.isFolder -> throw ArchiveOpenException(
+                        "目标位置上已经有一个同名文件，不能当解压目录；选「自动改名」或先把它挪开",
+                    )
                 }
+                // 落点始终是那个文件夹：新建与"合并进已有"都一样。
+                // createdFolder 只标记"本次新建"，供一键清理与导航判断用。
+                dest = target
             }
-            dest = createdFolder ?: requested
             // 先建目录层级；目标位置是文件的跳过，避免 ensureFolderPath 抛异常打断整包
             for (item in all.filter { it.isDirectory }) {
                 val rel = joinRelative(dest, item.displayName)
@@ -212,7 +231,7 @@ class ArchiveEngine(private val repo: VaultRepository) {
             try {
                 reader.forEachContent(writable) { item, stream ->
                     currentCoroutineContext().ensureActive()
-                    val id = writeEntry(item, stream, dest, policy, tally, ids)
+                    val id = writeEntry(item, stream, dest, policy, tally, ids, budget)
                     if (id != null) {
                         writtenLocally += item.sizeBytes.coerceAtLeast(0)
                         onProgress(writtenLocally, total)
@@ -253,13 +272,19 @@ class ArchiveEngine(private val repo: VaultRepository) {
         val ids = ArrayList<Long>()
         ArchiveReaders.open(archive, password).use { reader ->
             reader.content(entry).use { stream ->
-                writeEntry(entry, stream, dest, policy, tally, ids)
+                writeEntry(entry, stream, dest, policy, tally, ids, ExtractBudget.forVault())
             }
         }
+        // 被体积上限挡下时不静默返回 null：单条目提取要让用户看到到底是为什么
+        if (ids.isEmpty()) tally.lastRefusal?.let { throw ArchiveOpenException(it) }
         ids.firstOrNull()?.let { repo.entryById(it) }
     }
 
-    /** 把包内一个条目解到临时文件，给预览用（不进库、不建索引）。 */
+    /**
+     * 把包内一个条目解到缓存里的临时文件，给预览用（不进库、不建索引）。
+     * 落在 cacheDir/entry-preview/ 这个专用子目录，由 [clearPreviewCache] 统一回收，
+     * 不然每预览一次就在缓存里留一个没人管的大文件。
+     */
     suspend fun extractToTemp(
         archive: File,
         entry: ArchiveItem,
@@ -269,7 +294,8 @@ class ArchiveEngine(private val repo: VaultRepository) {
         requireReadable(archive)
         if (!entry.regularFile) return@withContext null
         val suffix = targetNameHint.substringAfterLast('.', "")
-        val temp = File.createTempFile("preview-", if (suffix.isEmpty()) "" else ".$suffix")
+        val dir = repo.previewCacheDir()
+        val temp = File(dir, "preview-${System.nanoTime()}${if (suffix.isEmpty()) "" else ".$suffix"}")
         runCatching {
             ArchiveReaders.open(archive, password).use { reader ->
                 reader.content(entry).use { input ->
@@ -352,11 +378,21 @@ class ArchiveEngine(private val repo: VaultRepository) {
         policy: ConflictPolicy,
         tally: Tally,
         createdIds: MutableList<Long>,
+        budget: ExtractBudget,
     ): Long? {
+        // 包内声明的大小可能造假或压根没有，超限的条目不写；整包解压时只跳过这一条
+        budget.refuseEntryBeforeWrite(item.sizeBytes)?.let {
+            tally.skipped++
+            tally.lastRefusal = it
+            return null
+        }
         val rel = joinRelative(dest, item.displayName)
         val dirRel = rel.substringBeforeLast('/', "")
         val leafName = rel.substringAfterLast('/')
         val existing = repo.entryAt(rel)
+        // 计数留到真的落地之后再加，否则写失败的条目也被算成"改名/覆盖成功"
+        var renamedInto = false
+        var trashedId: Long? = null
         if (existing != null) {
             when (policy) {
                 ConflictPolicy.SKIP -> {
@@ -365,12 +401,13 @@ class ArchiveEngine(private val repo: VaultRepository) {
                 }
                 // 覆盖目录太危险（会连带删掉整棵子树），退化成另存一份
                 ConflictPolicy.OVERWRITE -> if (existing.isFolder) {
-                    tally.renamed++
+                    renamedInto = true
                 } else {
-                    repo.deletePermanently(listOf(existing.id))
-                    tally.overwritten++
+                    // 移进回收站而不是彻底删掉：万一只删未写就失败，原文件还回得来
+                    repo.trash(listOf(existing.id))
+                    trashedId = existing.id
                 }
-                ConflictPolicy.RENAME -> tally.renamed++
+                ConflictPolicy.RENAME -> renamedInto = true
             }
         }
         val allocation = repo.allocateFile(dirRel, leafName)
@@ -382,6 +419,8 @@ class ArchiveEngine(private val repo: VaultRepository) {
                     val read = stream.read(buffer)
                     if (read < 0) break
                     output.write(buffer, 0, read)
+                    // 声明大小不可信的包（gz / bz2 / xz）只能靠边写边查拦住
+                    budget.watch(read.toLong()) { repo.usableBytes() }?.let { throw ArchiveOpenException(it) }
                 }
                 output.fd.sync()
             }
@@ -394,9 +433,15 @@ class ArchiveEngine(private val repo: VaultRepository) {
             )
             createdIds += committed.id
             tally.written++
+            if (renamedInto) tally.renamed++
+            if (trashedId != null) tally.overwritten++
             committed.id
         } catch (e: Exception) {
             repo.discardAllocation(allocation)
+            // 取消要原样传出去，不能被包装成"解压失败"
+            if (trashedId != null && e !is kotlinx.coroutines.CancellationException) {
+                throw ArchiveOpenException("${e.messageSafe()}；被替换的原文件已移入回收站，可以在回收站还原")
+            }
             throw e
         }
     }
@@ -407,6 +452,8 @@ class ArchiveEngine(private val repo: VaultRepository) {
         var overwritten = 0
         var skipped = 0
         var skippedLinks = 0
+        /** 最近一次因超限被拒的原因，单条目提取要把它原样报给界面。 */
+        var lastRefusal: String? = null
     }
 
     private suspend fun zipFolder(
@@ -439,20 +486,14 @@ class ArchiveEngine(private val repo: VaultRepository) {
         if (!archive.isFile) throw ArchiveOpenException("压缩包不存在，或仍在回收站中")
     }
 
-    /** 空间明显不够就拒绝开工。requiredBytes 或可用量拿不到时不误报、放行。 */
-    private fun refuseIfNoSpace(requiredBytes: Long) {
-        val free = repo.usableBytes()
-        if (requiredBytes < 0L || free <= 0L) return
-        if (requiredBytes > free - SAFETY_MARGIN) {
-            throw ArchiveOpenException("空间不够：需要约 ${formatBytes(requiredBytes)}，可用 ${formatBytes(free)}")
-        }
+    /** 清掉包内预览留下的缓存文件（不属于库内容，也不进索引）。 */
+    suspend fun clearPreviewCache() = withContext(Dispatchers.IO) {
+        repo.previewCacheDir().listFiles()?.forEach { file -> runCatching { file.delete() } }
+        Unit
     }
 
     private companion object {
         const val BUFFER = 64 * 1024
-
-        /** 留一点余量：解压过程中的临时文件与库本身共用一个分区。 */
-        const val SAFETY_MARGIN = 32L * 1024 * 1024
         const val MAX_RENAME_ATTEMPTS = 500
     }
 }

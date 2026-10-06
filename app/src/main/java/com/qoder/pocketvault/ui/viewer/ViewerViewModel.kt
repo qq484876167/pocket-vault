@@ -119,6 +119,7 @@ class ViewerViewModel(
     private var persistJob: Job? = null
     private var searchJob: Job? = null
     private var chapterJob: Job? = null
+    private var resumeGuard: Job? = null
     private var encodingOverride: TextEncoding? = null
 
     init {
@@ -266,6 +267,13 @@ class ViewerViewModel(
             val target = wanted.coerceIn(0, (list.size - 1).coerceAtLeast(0))
             _paragraphIndex.value = target
             _resumeParagraph.value = target
+        }
+        // 兜底：这个契约不该完全依赖 UI 配合。整章没有段落时 UI 的 scrollToItem 落不到位、
+        // 不会来 consumeResume；但章节还在加载时不能抢，否则空列表报回来的第 0 项会冲掉进度。
+        resumeGuard?.cancel()
+        resumeGuard = viewModelScope.launch {
+            delay(RESUME_GUARD_MS)
+            if (_resumeParagraph.value >= 0 && _paragraphs.value.isEmpty()) _resumeParagraph.value = -1
         }
     }
 
@@ -445,3 +453,6 @@ class ViewerViewModel(
         _pdf.value = null
     }
 }
+
+/** 落点占位的最长存活时间：UI 没来消费也得放行。 */
+private const val RESUME_GUARD_MS = 800L

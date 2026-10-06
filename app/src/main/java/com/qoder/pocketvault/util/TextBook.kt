@@ -435,10 +435,24 @@ private class TextIndexScanner(
     }
 
     private fun safeCut(bytes: ByteArray): Int {
-        if (encoding != TextEncoding.UTF_8) return bytes.size
-        var cut = bytes.size
-        while (cut > bytes.size - 4 && cut > 0 && (bytes[cut - 1].toInt() and 0xFF) >= 0x80) cut--
-        return cut
+        if (encoding == TextEncoding.UTF_8) {
+            var cut = bytes.size
+            while (cut > bytes.size - 4 && cut > 0 && (bytes[cut - 1].toInt() and 0xFF) >= 0x80) cut--
+            return cut
+        }
+        // UTF-16 的行缓冲始终按 2 字节推进，边界天然对齐
+        if (unit != 1) return bytes.size
+        // GB18030 / Big5 的首字节与后续字节范围重叠，光看末尾几个字节判不出边界。
+        // 这一行是从行首（换行之后，必然对齐）攒起来的，所以让解码器自己停在序列开头：
+        // endOfInput=false 时未走完的尾序列会留在输入缓冲里，position() 就是安全切点。
+        val decoder = encoding.charset.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPLACE)
+            .onUnmappableCharacter(CodingErrorAction.REPLACE)
+        val input = ByteBuffer.wrap(bytes)
+        val output = CharBuffer.allocate(bytes.size)
+        runCatching { decoder.decode(input, output, false) }
+        val consumed = input.position()
+        return if (consumed in 1 until bytes.size) consumed else bytes.size
     }
 
     private fun onLine(trimmed: String, byteStart: Long, charStart: Int) {

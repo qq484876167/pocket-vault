@@ -51,6 +51,13 @@ class VaultPaths(
         0L
     }
 
+    /**
+     * 包内条目预览的落脚处：属于可随时丢弃的缓存，不进库、不建索引，
+     * 单独一个子目录才能被一键清干净（系统清缓存也会带走）。
+     */
+    val previewCacheDir: File
+        get() = File(context.cacheDir, "entry-preview").apply { if (!exists()) mkdirs() }
+
     /** 相对路径 -> File，带符号链接级的越界校验。 */
     fun fileOf(relativePath: String): File {
         val clean = normalizeRelative(relativePath)

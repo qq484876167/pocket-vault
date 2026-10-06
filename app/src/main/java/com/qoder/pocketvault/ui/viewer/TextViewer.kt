@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qoder.pocketvault.util.TextBook
 import com.qoder.pocketvault.util.TextEncoding
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -106,17 +107,23 @@ fun TextViewer(
         val target = resumeParagraph
         if (target in 0 until paragraphs.size) {
             listState.scrollToItem(target)
-            vm.consumeResume()
         }
+        // 复位必须无条件：漏一次 _resumeParagraph 就永久 >= 0，
+        // 之后 onParagraphRead 会一直早退，整场阅读都不再记录进度。
+        vm.consumeResume()
     }
 
-    // 不防抖：段落号一变就记下来，这样「滚到中间马上按返回」也不会丢掉位置
+    // 段落位置按 150ms 采样上报：正确性不靠"每一个都记"，离开时 DisposableEffect /
+    // onCleared 都会 flushProgress() 把最后一位置写下去。
+    // snapshotFlow 本身是合并式的，collect 里睡 150ms 就等于 sample(150)，
+    // 又不用碰 kotlinx.coroutines.flow.sample 那个 @FlowPreview。
     LaunchedEffect(listState, chapterIndex, paragraphs.size) {
         snapshotFlow { listState.firstVisibleItemIndex }
             .collect { index ->
                 val safe = index.coerceAtMost((paragraphs.size - 1).coerceAtLeast(0))
                 vm.onParagraphRead(safe)
                 bookPercent = book.percentRead(chapterIndex, safe, paragraphs.size)
+                delay(SAMPLE_MS)
             }
     }
 
@@ -572,3 +579,6 @@ private fun SearchSheet(
         }
     }
 }
+
+/** 滚动回报的最小间隔：甩动时不把 prefs 镜像、协程与重组按段落逐个触发。 */
+private const val SAMPLE_MS = 150L

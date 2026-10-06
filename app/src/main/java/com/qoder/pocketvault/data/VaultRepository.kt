@@ -92,6 +92,9 @@ class VaultRepository(
     /** 私有目录还能写多少字节；拿不到返回 0，调用方按"未知"处理不误报。 */
     fun usableBytes(): Long = paths.usableBytes()
 
+    /** 包内条目预览的缓存子目录：派生数据，可随时整目录清空。 */
+    fun previewCacheDir(): File = paths.previewCacheDir
+
     // ---------------------------------------------------------------- 目录与分配
 
     /** 保证逻辑目录存在（磁盘 + 索引），返回其条目 id。'' 代表根目录。 */
