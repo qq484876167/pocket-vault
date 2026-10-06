@@ -84,7 +84,7 @@ fun BrowserHost(
     val selection by vm.selection.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
-    val choices by vm.folderChoices.collectAsStateWithLifecycle()
+    val currentDir by remember(vm) { vm.currentDir }.collectAsStateWithLifecycle()
     val snackbar = LocalSnackbar.current
 
     var sheetMode by remember { mutableStateOf(SheetMode.NONE) }
@@ -250,10 +250,21 @@ fun BrowserHost(
         if (busy) BusyOverlay(true)
     }
 
+    // 移动文件夹时，它自己与所有后代目录都不能当目标：在导航过程中就标灰，
+    // 而不是等用户点了才由 repo.move() 抛异常。复制没有这个限制（复制到自己是产生副本）。
+    var moveBlocked by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    LaunchedEffect(sheetMode, selection, entries, currentDir) {
+        if (sheetMode == SheetMode.MOVE) {
+            val sources = entries.filter { it.id in selection && it.isFolder }.map { it.relativePath }
+            moveBlocked = vm.folderTargets.forbiddenForMove(sources) + (currentDir to "内容已经在这个目录里")
+        }
+    }
+
     when (sheetMode) {
         SheetMode.MOVE -> FolderPickerSheet(
-            choices = choices,
-            excludePaths = setOf(currentDirOf(vm)),
+            ports = vm.folderTargets.ports(),
+            confirmLabel = "移动到这里",
+            disabled = moveBlocked,
             onDismiss = { sheetMode = SheetMode.NONE },
             onPick = { path ->
                 sheetMode = SheetMode.NONE
@@ -262,8 +273,8 @@ fun BrowserHost(
         )
 
         SheetMode.COPY -> FolderPickerSheet(
-            choices = choices,
-            excludePaths = emptySet(),
+            ports = vm.folderTargets.ports(),
+            confirmLabel = "复制到这里",
             onDismiss = { sheetMode = SheetMode.NONE },
             onPick = { path ->
                 sheetMode = SheetMode.NONE

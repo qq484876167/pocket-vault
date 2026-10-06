@@ -65,12 +65,31 @@ class VaultPrefs(context: Context) {
             if (value == null) remove(KEY_LAST_READING) else putString(KEY_LAST_READING, value.serialize())
         }
 
+    /**
+     * 最近用过的目标目录（移动 / 复制 / 解压的目标位置），新在前，最多 5 条。
+     * 根目录本身是空串，存储里用 "/" 当哨兵；目录名里不会有换行（`sanitizeName` 把控制字符
+     * 换成 `_`），所以用换行做分隔符不会歧义。
+     */
+    var folderTargets: List<String>
+        get() = sp.getString(KEY_FOLDER_TARGETS, null)
+            ?.split('\n')
+            ?.filter { it.isNotEmpty() }
+            ?.map { if (it == "/") "" else it }
+            ?: emptyList()
+        set(value) = sp.edit {
+            val kept = value.distinct().take(MAX_FOLDER_TARGETS)
+            if (kept.isEmpty()) remove(KEY_FOLDER_TARGETS)
+            else putString(KEY_FOLDER_TARGETS, kept.joinToString("\n") { if (it.isEmpty()) "/" else it })
+        }
+
     private companion object {
         const val KEY_ONBOARDED = "onboarded"
         const val KEY_ROOT_MODE = "root_mode"
         const val KEY_TRASH_DAYS = "trash_days"
         const val KEY_WATCHED_TREE = "watched_tree"
         const val KEY_WATCHED_LABEL = "watched_label"
+        const val KEY_FOLDER_TARGETS = "folder_targets"
+        const val MAX_FOLDER_TARGETS = 5
         const val KEY_READING_FONT = "reading_font"
         const val KEY_READING_LINE = "reading_line"
         const val KEY_READING_THEME = "reading_theme"

@@ -44,6 +44,13 @@ data class StorageReport(
     val fileCount: Int,
 )
 
+/** 目录选择器里的一行：路径、显示名、直接子项数。 */
+data class FolderRow(
+    val relativePath: String,
+    val name: String,
+    val childCount: Int,
+)
+
 /**
  * 文件库的唯一写入口。约定：
  *  - 相对路径只用于 ACTIVE 条目；TRASHED 条目的磁盘位置由 [physicalFile] 推导。
@@ -148,6 +155,26 @@ class VaultRepository(
     }
 
     suspend fun folderPaths(): List<String> = withContext(Dispatchers.IO) { dao.folderPaths() }
+
+    /**
+     * 目录选择器用的一层数据：某个目录的**直接子目录**，每行带自己的子项数。
+     * 计数走一次 `parentId IN (…) GROUP BY` 聚合，不逐行数（200 个子目录就是 200 次查询）。
+     * 返回 null 表示这个目录已经不存在了——历史路径里点到失效条目时靠它给提示。
+     */
+    suspend fun folderRows(dirRelativePath: String): List<FolderRow>? = withContext(Dispatchers.IO) {
+        val clean = VaultPaths.normalizeRelative(dirRelativePath)
+        val parent = if (clean.isEmpty()) null else dao.byPath(clean)?.takeIf {
+            it.state == EntryState.ACTIVE && it.kind == FileKind.FOLDER
+        }
+        if (clean.isNotEmpty() && parent == null) return@withContext null
+        val kids = sortEntries(
+            dao.childFolders(parent?.id ?: ROOT_ID),
+            ListOptions(SortField.NAME, ascending = true),
+        )
+        if (kids.isEmpty()) return@withContext emptyList()
+        val counts = dao.childCounts(kids.map { it.id }).associate { it.parent to it.total }
+        kids.map { FolderRow(joinRelative(clean, it.name), it.name, counts[it.id] ?: 0) }
+    }
 
     /** ACTIVE 子项（索引顺序，未做中文排序）。 */
     suspend fun childrenOf(entry: VaultEntry): List<VaultEntry> = withContext(Dispatchers.IO) { dao.children(entry.id) }

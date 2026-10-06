@@ -60,6 +60,9 @@ data class VaultEntry(
 
 data class KindStat(val kind: FileKind, val itemCount: Int, val totalBytes: Long)
 
+/** 聚合查询的投影：某个父目录下的直接子项数。 */
+data class ChildCount(val parent: Long, val total: Int)
+
 class Converters {
     @TypeConverter
     fun kindToString(value: FileKind): String = value.name
