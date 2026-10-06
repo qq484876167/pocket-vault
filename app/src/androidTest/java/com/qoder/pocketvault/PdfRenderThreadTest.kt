@@ -32,20 +32,23 @@ import java.util.concurrent.atomic.AtomicInteger
 class PdfRenderThreadTest {
 
     private lateinit var context: Context
+    private lateinit var testAssets: android.content.res.AssetManager
     private lateinit var pdf: File
 
     @Before
     fun setUp() {
-        context = InstrumentationRegistry.getInstrumentation().targetContext
+        val instr = InstrumentationRegistry.getInstrumentation()
+        context = instr.targetContext
+        testAssets = instr.context.assets
         pdf = File(context.filesDir, "pdf-thread-test.pdf")
-        context.assets.open("many-pages.pdf").use { input ->
+        testAssets.open("many-pages.pdf").use { input ->
             pdf.writeBytes(input.readBytes())
         }
         assertTrue("600 页样本没拷出来：${pdf.length()} bytes", pdf.length() > 100_000)
     }
 
     @Test
-    fun renderingKeepsMainThreadFree() = runBlocking {
+    fun renderingKeepsMainThreadFree(): Unit = runBlocking {
         val doc = PdfDocument.open(pdf)
         assertTrue("PDF 打不开（P0-1 之后 open 也在 IO 上）", doc != null)
         doc!!
@@ -112,7 +115,7 @@ class PdfRenderThreadTest {
 
     /** 并发渲染 + 关闭不能炸（P1-13 的渲染锁）。 */
     @Test
-    fun concurrentRenderThenCloseIsSafe() = runBlocking {
+    fun concurrentRenderThenCloseIsSafe(): Unit = runBlocking {
         val doc = PdfDocument.open(pdf) ?: return@runBlocking
         val pages = (0..5).map { i -> async(Dispatchers.IO) { doc.page(i * 7 + 1, 900) } }
         val bitmaps = pages.map { it.await() }
@@ -122,7 +125,7 @@ class PdfRenderThreadTest {
 
     /** 越界页号返回 null 而不是抛（界面按这个判"翻到头了"）。 */
     @Test
-    fun outOfRangePagesReturnNull() = runBlocking {
+    fun outOfRangePagesReturnNull(): Unit = runBlocking {
         val doc = PdfDocument.open(pdf) ?: return@runBlocking
         assertEquals(null, doc.page(-1, 900))
         assertEquals(null, doc.page(doc.pageCount, 900))

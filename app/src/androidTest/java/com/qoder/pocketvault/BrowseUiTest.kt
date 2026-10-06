@@ -102,7 +102,7 @@ class BrowseUiTest {
 
     /** 验收 5：文件在子目录里时，库根必须是可选目标，移动真的落到库根。 */
     @Test
-    fun canMoveFileUpToVaultRoot() = runBlocking {
+    fun canMoveFileUpToVaultRoot(): Unit = runBlocking {
         seedUiTree()
         assertNotNull("前置条件：mv.txt 应该在 uiSeed/nest 里", graph.repo.entryAt("uiSeed/nest/mv.txt"))
 
@@ -148,7 +148,7 @@ class BrowseUiTest {
 
     /** 验收 11：彻底删除与清空回收站都要先确认。 */
     @Test
-    fun trashIrreversibleActionsAskFirst() = runBlocking {
+    fun trashIrreversibleActionsAskFirst(): Unit = runBlocking {
         seedUiTree()
         val id = graph.repo.entryAt("trashme.txt")!!.id
         graph.repo.trash(listOf(id))

@@ -51,7 +51,7 @@ class GhostEntryTest {
     }
 
     @Test
-    fun restoreWithoutPhysicalFileFailsAndRescanDropsTheGhost() = runBlocking {
+    fun restoreWithoutPhysicalFileFailsAndRescanDropsTheGhost(): Unit = runBlocking {
         val tree = FakeTreeBuilder("ghostDir")
         tree.file("ghost.txt", "这条记录会先活着".toByteArray())
         saf.seed(tree)
