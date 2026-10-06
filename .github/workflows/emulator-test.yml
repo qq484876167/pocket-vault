@@ -26,10 +26,14 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # 取证用：确认这台 runner 真的有 KVM，否则模拟器只能软件渲染、启动会超时
-      - name: KVM check
+      # 上一次失败的原因就在这儿：runner 上 /dev/kvm 是 crw-rw---- root kvm，
+      # 而 runner 用户不在 kvm 组里，模拟器动作检测到没加速就退回 -accel off（TCG），
+      # x86_64 镜像软渲染 600 秒起不来。这里把设备节点放开。
+      - name: Enable KVM access
         run: |
-          ls -l /dev/kvm || echo "NO /dev/kvm"
+          ls -l /dev/kvm
+          sudo chmod 666 /dev/kvm
+          ls -l /dev/kvm
           egrep -c '(vmx|svm)' /proc/cpuinfo || true
           free -m
           df -h
@@ -53,7 +57,8 @@ jobs:
           arch: x86_64
           profile: pixel_5
           cores: 4
-          memory-size: 6144
+          ram-size: 6144
+          boot-timeout: 1200
           disable-animations: true
           script: gradle --no-daemon connectedDebugAndroidTest
 
