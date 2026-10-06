@@ -68,6 +68,8 @@ fun DetailScreen(vm: DetailViewModel) {
     val entry by vm.entry.collectAsStateWithLifecycle()
     val preview by vm.preview.collectAsStateWithLifecycle()
     val archive by vm.archive.collectAsStateWithLifecycle()
+    val folders by vm.folders.collectAsStateWithLifecycle()
+    var archivePassword by remember { mutableStateOf("") }
     val message by vm.message.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val navigator = LocalNavigator.current
@@ -135,11 +137,24 @@ fun DetailScreen(vm: DetailViewModel) {
 
             if (current.kind == FileKind.ARCHIVE) {
                 Spacer(Modifier.height(12.dp))
-                ArchiveBlock(
+                ArchiveCard(
                     state = archive,
+                    password = archivePassword,
+                    onPasswordChange = { archivePassword = it },
                     targetLabel = folderDisplayName(current.relativePath.substringBeforeLast('/', "")),
+                    folders = folders,
                     onList = { password -> vm.listArchive(password.ifBlank { null }) },
-                    onExtract = { password -> vm.extract(password.ifBlank { null }) },
+                    onPlan = { target, specific ->
+                        vm.planExtract(target, specific, archivePassword.ifBlank { null }) {}
+                    },
+                    onExtract = { target, specific, policy, merge ->
+                        vm.extract(target, specific, archivePassword.ifBlank { null }, policy, merge)
+                    },
+                    onExtractOne = { item, password -> vm.extractEntry(item, password) },
+                    onPreviewOne = { item, password, sink -> vm.previewEntry(item, password, sink) },
+                    onOpenDestination = { vm.openDestination { id -> navigator?.openFolder(id) } },
+                    onCleanup = vm::cleanupPartialExtraction,
+                    onOpenExternal = { vm.openWith(context) },
                 )
             }
 
@@ -308,83 +323,6 @@ private fun PreviewBlock(kind: FileKind, preview: PreviewContent?) {
         ) {
             if (kind != FileKind.ARCHIVE) {
                 Text("这类文件没有内置预览，可用其他应用打开。", style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-}
-
-/** zip 可以直接在应用内浏览和解压；rar / 7z 等格式只提示用其他应用处理。 */
-@Composable
-private fun ArchiveBlock(
-    state: ArchiveUiState,
-    targetLabel: String,
-    onList: (String) -> Unit,
-    onExtract: (String) -> Unit,
-) {
-    var password by remember { mutableStateOf("") }
-    Card {
-        Column(Modifier.padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("压缩包内容", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                if (state.loading) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-            }
-            Spacer(Modifier.height(8.dp))
-
-            if (state.error != null || state.needsPassword) {
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("压缩包密码（无密码留空）") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    VaultButton("读取列表") { onList(password) }
-                    VaultButton("解压", filled = false) { onExtract(password) }
-                }
-            }
-
-            state.error?.let {
-                Spacer(Modifier.height(6.dp))
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            }
-
-            if (state.items.isNotEmpty()) {
-                state.items.take(80).forEach { item ->
-                    Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            if (item.isDirectory) "${item.displayName}/" else item.displayName,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(if (item.isDirectory) "" else formatBytes(item.sizeBytes), style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-                if (state.items.size > 80) {
-                    Text("另有 ${state.items.size - 80} 项未显示。", style = MaterialTheme.typography.bodySmall)
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    VaultButton("解压到 $targetLabel", filled = false) { onExtract(password) }
-                }
-                state.progress?.let { (written, total) ->
-                    Spacer(Modifier.height(8.dp))
-                    LinearProgressIndicator(
-                        progress = { if (total > 0) (written.toFloat() / total).coerceIn(0f, 1f) else 0f },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                if (state.extractedCount > 0) {
-                    Spacer(Modifier.height(6.dp))
-                    Text("已解压 ${state.extractedCount} 个文件。", style = MaterialTheme.typography.bodySmall)
-                }
-            } else if (!state.needsPassword && state.error == null && !state.loading) {
-                Text("这个包里没有可显示的条目，或是当前格式不支持在应用内浏览。", style = MaterialTheme.typography.bodySmall)
             }
         }
     }

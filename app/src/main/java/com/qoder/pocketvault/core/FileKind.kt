@@ -30,8 +30,8 @@ enum class FileKind(val label: String) {
             "sql", "epub", "mobi", "azw3", "caj", "key", "pages", "numbers"
         )
         private val ARCHIVE_EXT = setOf(
-            "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "iso", "apk", "jar",
-            "war", "cbz", "cbr"
+            "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "txz", "tbz", "tbz2",
+            "iso", "apk", "jar", "war", "cbz", "cbr"
         )
 
         fun extensionOf(name: String): String = name.substringAfterLast('.', "").lowercase()

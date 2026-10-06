@@ -89,6 +89,9 @@ class VaultRepository(
         }
     }.flowOn(Dispatchers.IO)
 
+    /** 私有目录还能写多少字节；拿不到返回 0，调用方按"未知"处理不误报。 */
+    fun usableBytes(): Long = paths.usableBytes()
+
     // ---------------------------------------------------------------- 目录与分配
 
     /** 保证逻辑目录存在（磁盘 + 索引），返回其条目 id。'' 代表根目录。 */
@@ -210,6 +213,15 @@ class VaultRepository(
 
     suspend fun findBySignature(signature: String): VaultEntry? = withContext(Dispatchers.IO) {
         dao.bySignature(signature)
+    }
+
+    /**
+     * 按逻辑路径查条目，用于解压时的同名冲突判断与"目标文件夹是否已存在"。
+     * 回收站里的条目不占逻辑路径，所以只认 ACTIVE 状态。
+     */
+    suspend fun entryAt(relativePath: String): VaultEntry? = withContext(Dispatchers.IO) {
+        val clean = VaultPaths.normalizeRelative(relativePath)
+        if (clean.isEmpty()) null else dao.byPath(clean)?.takeIf { it.state == EntryState.ACTIVE }
     }
 
     // ---------------------------------------------------------------- 基本操作

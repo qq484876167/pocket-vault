@@ -13,8 +13,8 @@ android {
         applicationId = "com.qoder.pocketvault"
         minSdk = 29
         targetSdk = 35
-        versionCode = 10
-        versionName = "1.10.0"
+        versionCode = 11
+        versionName = "1.11.0"
     }
 
     buildTypes {
@@ -61,4 +61,9 @@ dependencies {
 
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("net.lingala.zip4j:zip4j:2.11.5")
+
+    // tar / tar.gz / bz2 / xz / 7z 的流式读取。commons-compress 是 Apache-2.0、xz 是
+    // public domain，都与本项目的 GPL-3.0 兼容。刻意不引入 rar/junrar：UnRAR 是限制性许可。
+    implementation("org.apache.commons:commons-compress:1.26.2")
+    implementation("org.tukaani:xz:1.10")
 }

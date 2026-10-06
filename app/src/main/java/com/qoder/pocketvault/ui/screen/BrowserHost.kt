@@ -45,7 +45,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.qoder.pocketvault.core.folderDisplayName
+import com.qoder.pocketvault.core.FileKind
 import com.qoder.pocketvault.data.db.VaultEntry
+import com.qoder.pocketvault.ui.vm.ExtractTarget
 import com.qoder.pocketvault.ui.LocalSnackbar
 import com.qoder.pocketvault.ui.components.EntryList
 import com.qoder.pocketvault.ui.components.FolderPickerSheet
@@ -131,13 +133,18 @@ fun BrowserHost(
             SelectionMenuItem("复制一份到…", SelectionAction.COPY),
             SelectionMenuItem("重命名", SelectionAction.RENAME),
             SelectionMenuItem("压缩为 zip", SelectionAction.COMPRESS),
+            SelectionMenuItem("解压", SelectionAction.EXTRACT),
             SelectionMenuItem("导出到手机公共目录", SelectionAction.EXPORT_PUBLIC),
             SelectionMenuItem("导出到选择的文件夹…", SelectionAction.EXPORT_TREE),
             SelectionMenuItem("移动到手机里的文件夹…（移出本应用）", SelectionAction.MOVE_OUT),
             SelectionMenuItem("移入回收站", SelectionAction.TRASH),
         )
     }
-    val activeMenu = if (selectionMenu.isNotEmpty()) selectionMenu else defaultMenu
+    // 「解压」只在选中项里确实有压缩包时才有意义，否则不显示
+    val hasArchiveSelected = entries.any { it.id in selection && it.kind == FileKind.ARCHIVE }
+    val baseMenu = if (selectionMenu.isNotEmpty()) selectionMenu else defaultMenu
+    val activeMenu = if (hasArchiveSelected) baseMenu
+    else baseMenu.filterNot { it.action == SelectionAction.EXTRACT }
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
@@ -161,6 +168,10 @@ fun BrowserHost(
                             }
                             SelectionAction.RENAME -> renameTarget = entries.firstOrNull { it.id == selection.first() }
                             SelectionAction.COMPRESS -> showCompress = true
+                            SelectionAction.EXTRACT -> vm.extractArchives(
+                                picked = entries.filter { it.id in selection },
+                                target = ExtractTarget.NEW_FOLDER,
+                            )
                             SelectionAction.TRASH -> vm.trashSelected()
                             SelectionAction.EXPORT_PUBLIC -> vm.exportSelectedToPublic()
                             SelectionAction.FAVORITE -> selection.forEach { vm.toggleFavorite(it, true) }
@@ -291,10 +302,14 @@ fun BrowserHost(
     if (showCompress) {
         CompressDialog(
             defaultName = "压缩-${folderDisplayName(currentDirOf(vm))}",
+            itemCount = entries.count { it.id in selection },
+            totalBytes = entries.filter { it.id in selection }.sumOf { entry ->
+                if (entry.isFolder) 0L else entry.sizeBytes
+            },
             onDismiss = { showCompress = false },
-            onConfirm = { name, password ->
+            onConfirm = { name, password, level ->
                 showCompress = false
-                vm.compressSelected(name, password)
+                vm.compressSelected(name, password, level)
             },
         )
     }
