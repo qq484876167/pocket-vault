@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  只在 debug 变体里存在：仪器化测试需要一个假的 SAF 来源（见 FakeSafProvider），
+  它必须跑在应用自己的进程里，所以放不进 androidTest 的 APK。
+  release 变体的清单里没有这个 provider。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <provider
+            android:name="com.qoder.pocketvault.support.FakeSafProvider"
+            android:authorities="com.qoder.pocketvault.testdocs"
+            android:exported="false"
+            android:grantUriPermissions="false" />
+    </application>
+</manifest>
