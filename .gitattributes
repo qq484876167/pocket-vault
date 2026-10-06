@@ -1,0 +1,8 @@
+# 二进制资源别做行尾转换：测试用的 PDF 是按字节偏移校验的
+*.pdf binary
+*.png binary
+*.jpg binary
+*.mp4 binary
+*.zip binary
+*.7z binary
+*.gz binary
