@@ -18,9 +18,11 @@ import com.qoder.pocketvault.data.db.VaultEntry
 import com.qoder.pocketvault.data.userMessage
 import com.qoder.pocketvault.util.FileBridge
 import com.qoder.pocketvault.util.PreviewContent
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /** 包内单条目的预览结果：图片直接显示，文本走编码识别，其他类型只能提示"提取后可看"。 */
@@ -116,15 +118,21 @@ class DetailViewModel(
 
     fun reload() {
         viewModelScope.launch {
-            val loaded = runCatching { repo.entryById(entryId) }.getOrNull()
-            _entry.value = loaded
-            if (loaded == null) {
+            val loaded = runCatching { repo.entryById(entryId) }.onFailure { it.rethrowIfCancelled() }
+            if (loaded.isFailure) {
+                // 查询出错和"真的没有这条"是两回事，都报"已不存在"会把用户支去重导
+                _message.value = "读取索引失败：${loaded.exceptionOrNull()?.userMessage()}"
+                return@launch
+            }
+            val entry = loaded.getOrNull()
+            _entry.value = entry
+            if (entry == null) {
                 _message.value = "该项目已不存在"
                 return@launch
             }
-            _preview.value = runCatching { graph.preview.load(loaded) }.getOrDefault(PreviewContent.None)
+            _preview.value = runCatching { graph.preview.load(entry) }.getOrDefault(PreviewContent.None)
             val file = physicalFile()
-            if (loaded.kind == FileKind.ARCHIVE && file != null) {
+            if (entry.kind == FileKind.ARCHIVE && file != null) {
                 refreshArchiveAccess()
             } else {
                 _archive.value = ArchiveUiState(loaded = true)
@@ -221,7 +229,7 @@ class DetailViewModel(
         viewModelScope.launch {
             val plan = runCatching {
                 graph.archives.plan(file, dest, password, graph.paths.usableBytes(), listed, landing)
-            }
+            }.onFailure { it.rethrowIfCancelled() }
             plan.fold(
                 onSuccess = { value ->
                     _archive.value = _archive.value.copy(plan = value)
@@ -264,7 +272,7 @@ class DetailViewModel(
                     ExtractTarget.SPECIFIC ->
                         VaultPaths.normalizeRelative(specificFolder ?: parent).ifEmpty { parent } to null
                 }
-            }
+            }.onFailure { it.rethrowIfCancelled() }
             decision.fold(
                 onSuccess = { (dest, folderName) ->
                     if (target == ExtractTarget.SPECIFIC) folderTargets.remember(dest)
@@ -298,7 +306,8 @@ class DetailViewModel(
                     policy = policy,
                     folderName = folderName,
                 )
-            }
+            }.onFailure { it.rethrowIfCancelled() }
+
             _busy.value = false
             result.fold(
                 onSuccess = { summary ->
@@ -338,8 +347,13 @@ class DetailViewModel(
             } else {
                 summary.createdEntryIds
             }
-            runCatching { repo.deletePermanently(targets) }
-            _message.value = if (targets.isEmpty()) "没有需要清理的文件" else "已清理本次解压的 ${targets.size} 项"
+            val cleared = runCatching { repo.deletePermanently(targets) }
+                .onFailure { it.rethrowIfCancelled() }
+            _message.value = when {
+                cleared.isFailure -> "清理失败：${cleared.exceptionOrNull()?.userMessage()}"
+                targets.isEmpty() -> "没有需要清理的文件"
+                else -> "已清理本次解压的 ${targets.size} 项"
+            }
             _archive.value = _archive.value.copy(lastSummary = null, extractedCount = 0)
         }
     }
@@ -365,7 +379,7 @@ class DetailViewModel(
         viewModelScope.launch {
             val outcome = runCatching {
                 graph.archives.extractEntryToVault(file, item, containingFolder(), password)
-            }
+            }.onFailure { it.rethrowIfCancelled() }
             _busy.value = false
             outcome.fold(
                 onSuccess = { entry ->
@@ -376,6 +390,13 @@ class DetailViewModel(
         }
     }
 
+    /** 预览的准备结果：文件已经在缓存里，文本（如果是文本类）也已经在 IO 上读好了。 */
+    private sealed interface PreviewPrep {
+        data class Failed(val reason: String) : PreviewPrep
+        data object NotPreviewable : PreviewPrep
+        data class Ready(val file: File, val text: String?) : PreviewPrep
+    }
+
     /** 单条目预览：先解到缓存临时文件，图片与文本能直接看；其他类型提示先提取。 */
     fun previewEntry(item: ArchiveItem, onReady: (EntryPreview) -> Unit) {
         val file = physicalFile() ?: return
@@ -383,45 +404,54 @@ class DetailViewModel(
         if (_busy.value) return
         _busy.value = true
         viewModelScope.launch {
+            val prepared = preparePreview(file, item, password)
+            _busy.value = false
+            onReady(
+                when (prepared) {
+                    is PreviewPrep.Failed -> EntryPreview.Error(prepared.reason)
+                    PreviewPrep.NotPreviewable -> EntryPreview.Error("这一类条目不能预览")
+                    is PreviewPrep.Ready -> when (FileKind.classify(item.displayName, null)) {
+                        FileKind.IMAGE -> EntryPreview.Image(prepared.file)
+                        FileKind.DOCUMENT, FileKind.OTHER ->
+                            if (prepared.text.isNullOrBlank()) EntryPreview.NeedExtract(prepared.file)
+                            else EntryPreview.Text(prepared.text)
+
+                        else -> EntryPreview.NeedExtract(prepared.file)
+                    }
+                },
+            )
+        }
+    }
+
+    /**
+     * 解包 + 文本扫描这类读盘解码全在 IO 上做：之前这段跑在 viewModelScope 默认的
+     * 主调度器上，等于"预览一个包内大文件"就把界面卡住。
+     */
+    private suspend fun preparePreview(file: File, item: ArchiveItem, password: String?): PreviewPrep =
+        withContext(Dispatchers.IO) {
             if (!previewCacheSwept) {
                 previewCacheSwept = true
                 // 上次会话被杀时可能留下过预览文件，先整目录扫一次
                 runCatching { graph.archives.clearPreviewCache() }
             }
-            // 上一次预览的文件已经不会再被界面引用了，先收掉，缓存里最多只留当前这一份
+            // 上一次预览的文件已经不会再被界面引用了，先收掉：缓存里最多只留当前这一份
             lastPreview?.let { runCatching { it.delete() } }
             lastPreview = null
-            val result = runCatching {
+            val extracted = runCatching {
                 graph.archives.extractToTemp(file, item, password, item.displayName)
-            }
-            _busy.value = false
-            val temp = result.getOrElse {
-                onReady(EntryPreview.Error(it.userMessage()))
-                return@launch
-            }
-            if (temp == null) {
-                onReady(EntryPreview.Error("这一类条目不能预览"))
-                return@launch
-            }
+            }.onFailure { it.rethrowIfCancelled() }
+            extracted.exceptionOrNull()?.let { return@withContext PreviewPrep.Failed(it.userMessage()) }
+            val temp = extracted.getOrNull() ?: return@withContext PreviewPrep.NotPreviewable
             lastPreview = temp
             val kind = FileKind.classify(item.displayName, null)
-            onReady(
-                when (kind) {
-                    FileKind.IMAGE -> EntryPreview.Image(temp)
-                    FileKind.DOCUMENT, FileKind.OTHER -> {
-                        // 用 TextBook 解一次，编码识别与阅读器一致；只取前面一小段
-                        val text = runCatching {
-                            com.qoder.pocketvault.util.TextBookLoader.load(temp).paragraphsOf(0).take(120).joinToString("\n")
-                        }.getOrNull()
-                        if (text.isNullOrBlank()) EntryPreview.NeedExtract(temp)
-                        else EntryPreview.Text(text.take(20_000))
-                    }
-
-                    else -> EntryPreview.NeedExtract(temp)
-                },
-            )
+            val text = if (kind == FileKind.DOCUMENT || kind == FileKind.OTHER) {
+                // 用 TextBook 解一次，编码识别与阅读器一致；只取前面一小段
+                runCatching {
+                    com.qoder.pocketvault.util.TextBookLoader.load(temp).paragraphsOf(0).take(120).joinToString("\n")
+                }.getOrNull()
+            } else null
+            PreviewPrep.Ready(temp, text?.take(20_000))
         }
-    }
 
     private fun archiveStem(name: String): String = ArchiveNames.stem(name)
 
@@ -449,6 +479,7 @@ class DetailViewModel(
         _busy.value = true
         viewModelScope.launch {
             val outcome = runCatching { graph.exporter.moveToTree(treeUri, listOf(entry)) }
+                .onFailure { it.rethrowIfCancelled() }
             _busy.value = false
             outcome.fold(
                 onSuccess = { result ->
@@ -472,16 +503,23 @@ class DetailViewModel(
     }
 
     fun setFavorite(favorite: Boolean) {
+        if (_busy.value) return
         viewModelScope.launch {
-            runCatching { repo.setFavorite(entryId, favorite) }
-            _entry.value = _entry.value?.copy(favorite = favorite)
+            val saved = runCatching { repo.setFavorite(entryId, favorite) }
+                .onFailure { it.rethrowIfCancelled() }
+            // 写库失败就不要改界面：星标看着变了、下次进来又没了，比不变更糟
+            if (saved.isSuccess) _entry.value = _entry.value?.copy(favorite = favorite)
+            else _message.value = "收藏状态没保存上：${saved.exceptionOrNull()?.userMessage()}"
         }
     }
 
     /** 删除成功后回调退出页面。 */
     fun trash(onDeleted: () -> Unit) {
+        // 解压 / 移出进行中不能删：源文件正被读着，挪走会变成一半成功一半失败
+        if (_busy.value) return
         viewModelScope.launch {
             runCatching { repo.trash(listOf(entryId)) }
+                .onFailure { it.rethrowIfCancelled() }
                 .onSuccess { onDeleted() }
                 .onFailure { _message.value = it.userMessage() }
         }
@@ -502,7 +540,7 @@ class DetailViewModel(
         if (_busy.value) return
         _busy.value = true
         viewModelScope.launch {
-            val outcome = runCatching { block() }
+            val outcome = runCatching { block() }.onFailure { it.rethrowIfCancelled() }
             _busy.value = false
             _message.value = outcome.fold(onFailure = { error -> error.userMessage() }, onSuccess = { it })
                 ?: successHint

@@ -9,6 +9,8 @@ import com.qoder.pocketvault.core.FileKind
 import com.qoder.pocketvault.core.LastReading
 import com.qoder.pocketvault.data.db.ReaderBookmark
 import com.qoder.pocketvault.data.db.VaultEntry
+import com.qoder.pocketvault.data.userMessage
+import com.qoder.pocketvault.ui.vm.rethrowIfCancelled
 import com.qoder.pocketvault.util.PdfDocument
 import com.qoder.pocketvault.util.TextBook
 import com.qoder.pocketvault.util.TextBookLoader
@@ -126,7 +128,14 @@ class ViewerViewModel(
 
     init {
         viewModelScope.launch {
-            val entry = runCatching { repo.entryById(entryId) }.getOrNull()
+            val loaded = runCatching { repo.entryById(entryId) }.onFailure { it.rethrowIfCancelled() }
+            // 读库出错和"真的没有这条"不能都报"已不存在"，后者会把用户支去重新导入
+            if (loaded.isFailure) {
+                _message.value = "读取索引失败：${loaded.exceptionOrNull()?.userMessage()}"
+                _ready.value = true
+                return@launch
+            }
+            val entry = loaded.getOrNull()
             if (entry == null) {
                 _message.value = "该项目已不存在"
                 _ready.value = true
@@ -455,8 +464,11 @@ class ViewerViewModel(
 
     override fun onCleared() {
         flushProgress()
-        _pdf.value?.close()
+        val document = _pdf.value
         _pdf.value = null
+        // onCleared 里 viewModelScope 已经取消了，只能走进程级作用域；
+        // close 会等渲染锁后面那一页画完，不然和 native 的 close 打架
+        if (document != null) graph.ioScope.launch { runCatching { document.closeAsync() } }
     }
 }
 

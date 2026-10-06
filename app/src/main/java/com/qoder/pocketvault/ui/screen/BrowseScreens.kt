@@ -29,6 +29,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +43,8 @@ import com.qoder.pocketvault.data.db.ListOptions
 import com.qoder.pocketvault.data.db.VaultEntry
 import com.qoder.pocketvault.data.db.SortField
 import com.qoder.pocketvault.ui.LocalNavigator
+import com.qoder.pocketvault.ui.LocalSnackbar
+import com.qoder.pocketvault.ui.components.ConfirmDialog
 import com.qoder.pocketvault.ui.components.FilterChip
 import com.qoder.pocketvault.ui.components.SelectionAction
 import com.qoder.pocketvault.ui.components.SelectionMenuItem
@@ -52,6 +55,7 @@ import com.qoder.pocketvault.ui.vm.LibraryViewModel
 import com.qoder.pocketvault.ui.vm.SearchViewModel
 import com.qoder.pocketvault.ui.vm.TrashViewModel
 import com.qoder.pocketvault.ui.vm.ViewMode
+import kotlinx.coroutines.launch
 
 private val ALL_TABS = LibraryTab.values().toList()
 
@@ -346,6 +350,12 @@ fun SearchScreen(vm: SearchViewModel) {
 @Composable
 fun TrashScreen(vm: TrashViewModel) {
     val entries by vm.entries.collectAsStateWithLifecycle()
+    val selection by vm.selection.collectAsStateWithLifecycle()
+    val snackbar = LocalSnackbar.current
+    val uiScope = rememberCoroutineScope()
+    // 彻底删除和清空回收站都没有回头路，必须先确认一次
+    var confirmForever by remember { mutableStateOf(false) }
+    var confirmEmpty by remember { mutableStateOf(false) }
 
     BrowserHost(
         vm = vm,
@@ -361,8 +371,8 @@ fun TrashScreen(vm: TrashViewModel) {
         onMenuAction = { action ->
             when (action) {
                 SelectionAction.RESTORE -> vm.restoreSelected()
-                SelectionAction.DELETE_FOREVER -> vm.deleteForeverSelected()
-                SelectionAction.EMPTY_TRASH -> vm.emptyTrash()
+                SelectionAction.DELETE_FOREVER -> confirmForever = true
+                SelectionAction.EMPTY_TRASH -> confirmEmpty = true
                 else -> Unit
             }
         },
@@ -379,6 +389,31 @@ fun TrashScreen(vm: TrashViewModel) {
         },
         emptyTitle = "回收站是空的",
         emptyHint = "删除的项目会先留在这里，可以随时恢复。",
-        onOpen = { },
+        onOpen = { uiScope.launch { snackbar?.showSnackbar("先在下面选中项目再点「恢复原位置」，回收站里的内容不能直接打开") } },
     )
+
+    if (confirmForever) {
+        ConfirmDialog(
+            title = "彻底删除 ${selection.size} 项？",
+            body = "彻底删除不进回收站，也没有任何还原途径。",
+            confirmLabel = "彻底删除",
+            onDismiss = { confirmForever = false },
+            onConfirm = {
+                confirmForever = false
+                vm.deleteForeverSelected()
+            },
+        )
+    }
+    if (confirmEmpty) {
+        ConfirmDialog(
+            title = "清空回收站？",
+            body = "回收站里全部 ${entries.size} 项都会被彻底删除，无法恢复。",
+            confirmLabel = "清空",
+            onDismiss = { confirmEmpty = false },
+            onConfirm = {
+                confirmEmpty = false
+                vm.emptyTrash()
+            },
+        )
+    }
 }

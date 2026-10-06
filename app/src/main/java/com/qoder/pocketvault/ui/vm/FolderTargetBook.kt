@@ -35,8 +35,9 @@ class FolderTargetBook(
     }
 
     /** 根目录永远存在；其余要能在索引里查到且是 ACTIVE 的文件夹。 */
-    private suspend fun exists(path: String): Boolean =
+    private suspend fun exists(path: String): Boolean = runCatching {
         path.isEmpty() || repo.entryAt(path)?.isFolder == true
+    }.getOrDefault(false)   // 路径本身不合法（老数据、手工写坏的 prefs）也算"这条历史失效"
 
     suspend fun rows(path: String): List<FolderRow>? = runCatching { repo.folderRows(path) }.getOrNull()
 

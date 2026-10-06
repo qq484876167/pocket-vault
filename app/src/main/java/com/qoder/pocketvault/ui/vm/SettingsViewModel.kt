@@ -9,7 +9,9 @@ import com.qoder.pocketvault.core.VaultRootMode
 import com.qoder.pocketvault.data.VerifyReport
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 data class SettingsState(
@@ -33,21 +35,53 @@ class SettingsViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun reload() {
         viewModelScope.launch {
-            val thumbDir = File(graph.thumbs.cacheDirPath())
-            _state.value = SettingsState(
-                rootMode = graph.paths.mode(),
-                internalPath = graph.paths.pathFor(VaultRootMode.INTERNAL),
-                externalPath = graph.paths.pathFor(VaultRootMode.EXTERNAL_SANDBOX),
-                currentPath = graph.rootPath(),
-                usableBytes = graph.paths.usableBytes(),
-                usedBytes = runCatching { graph.repo.usedBytes() }.getOrDefault(0L),
-                isEmptyVault = runCatching { graph.repo.isEmpty() }.getOrDefault(true),
-                retentionDays = graph.prefs.trashRetentionDays,
-                trees = graph.importer.persistedTrees(),
-                thumbCacheBytes = if (thumbDir.isDirectory) thumbDir.walkTopDown().filter { it.isFile }.sumOf { it.length() } else 0L,
+            // 整段都在 stat 磁盘（缩略图缓存要递归数一遍），必须走 IO
+            val snapshot = withContext(Dispatchers.IO) {
+                val thumbDir = File(graph.thumbs.cacheDirPath())
+                SettingsSnapshot(
+                    rootMode = graph.paths.mode(),
+                    internalPath = graph.paths.pathFor(VaultRootMode.INTERNAL),
+                    externalPath = graph.paths.pathFor(VaultRootMode.EXTERNAL_SANDBOX),
+                    currentPath = graph.rootPath(),
+                    usableBytes = graph.paths.usableBytes(),
+                    usedBytes = runCatching { graph.repo.usedBytes() }.getOrDefault(0L),
+                    isEmptyVault = runCatching { graph.repo.isEmpty() }.getOrDefault(true),
+                    retentionDays = graph.prefs.trashRetentionDays,
+                    trees = graph.importer.persistedTrees(),
+                    thumbCacheBytes = if (thumbDir.isDirectory) {
+                        thumbDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+                    } else 0L,
+                )
+            }
+            // 逐字段 copy：整体重建 SettingsState 会把刚写进去的 message 抹掉，
+            // 于是"切存储位置 / 重建索引"用户永远看不到回执
+            _state.value = _state.value.copy(
+                rootMode = snapshot.rootMode,
+                internalPath = snapshot.internalPath,
+                externalPath = snapshot.externalPath,
+                currentPath = snapshot.currentPath,
+                usableBytes = snapshot.usableBytes,
+                usedBytes = snapshot.usedBytes,
+                isEmptyVault = snapshot.isEmptyVault,
+                retentionDays = snapshot.retentionDays,
+                trees = snapshot.trees,
+                thumbCacheBytes = snapshot.thumbCacheBytes,
             )
         }
     }
+
+    private data class SettingsSnapshot(
+        val rootMode: VaultRootMode,
+        val internalPath: String,
+        val externalPath: String,
+        val currentPath: String,
+        val usableBytes: Long,
+        val usedBytes: Long,
+        val isEmptyVault: Boolean,
+        val retentionDays: Int,
+        val trees: List<UriPermission>,
+        val thumbCacheBytes: Long,
+    )
 
     fun switchRoot(mode: VaultRootMode) {
         viewModelScope.launch {

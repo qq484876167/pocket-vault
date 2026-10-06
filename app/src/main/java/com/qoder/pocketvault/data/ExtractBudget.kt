@@ -17,7 +17,8 @@ internal class ExtractBudget(
     private val recheckEveryBytes: Long,
 ) {
 
-    private var nextRecheckAt = safetyMarginBytes
+    // 第一次写入后就复查：剩余空间本来就只剩几 MB 时，等写满 32 MB 再查已经太晚了
+    private var nextRecheckAt = 0L
     private var total = 0L
 
     /** 开工前的核对；声明大小拿不到（<0）时放行，交给写入过程中的看门狗。 */
