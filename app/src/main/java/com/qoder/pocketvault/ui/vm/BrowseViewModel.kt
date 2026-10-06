@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.qoder.pocketvault.AppGraph
 import com.qoder.pocketvault.core.FileKind
 import com.qoder.pocketvault.core.VaultPaths
+import com.qoder.pocketvault.data.ArchiveCompression
+import com.qoder.pocketvault.data.ArchiveNames
 import com.qoder.pocketvault.core.breadcrumbOf
 import com.qoder.pocketvault.data.StorageReport
 import com.qoder.pocketvault.data.VaultRepository
@@ -101,6 +103,66 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
         }
     }
 
+    /**
+     * 解压一个或一批压缩包：每个包独立成功失败，一个坏了不影响其余，
+     * 最后汇总成一句提示。加密包需要密码时提示去详情页输密码（这里不弹密码框）。
+     */
+    fun extractArchives(
+        picked: List<VaultEntry>,
+        target: ExtractTarget,
+        specific: String? = null,
+        password: String? = null,
+    ) = runAction {
+        val archives = picked.filter { it.kind == FileKind.ARCHIVE }
+        require(archives.isNotEmpty()) { "选中的项目里没有压缩包" }
+        var done = 0
+        var files = 0
+        val failures = ArrayList<String>()
+        for (archive in archives) {
+            val file = runCatching { repo.physicalFile(archive) }.getOrNull()
+            if (file == null) {
+                failures += "${archive.name}（取不到文件）"
+                continue
+            }
+            val parent = archive.relativePath.trim('/').substringBeforeLast('/', "")
+            val dest = if (target == ExtractTarget.SPECIFIC) {
+                VaultPaths.normalizeRelative(specific ?: parent)
+            } else {
+                parent
+            }
+            val folder = if (target == ExtractTarget.NEW_FOLDER) ArchiveNames.stem(archive.name) else null
+            val summary = runCatching {
+                graph.archives.extractToVault(
+                    archive = file,
+                    destDirRelativePath = dest,
+                    password = password,
+                    onProgress = { _, _ -> },
+                    folderName = folder,
+                )
+            }
+            summary.fold(
+                onSuccess = { value ->
+                    done++
+                    files += value.written
+                    if (value.partial) failures += "${archive.name}（中途失败：${value.error}）"
+                    else if (value.skipped > 0 || value.renamed > 0) {
+                        failures += "${archive.name}（跳过 ${value.skipped}、改名 ${value.renamed}）"
+                    }
+                },
+                onFailure = { failures += "${archive.name}（${it.userMessage()}）" },
+            )
+        }
+        buildString {
+            append("已解压 $done/${archives.size} 个压缩包，共 $files 个文件")
+            if (failures.isNotEmpty()) {
+                append("；${failures.size} 个没解完：")
+                append(failures.take(3).joinToString("、"))
+                if (failures.size > 3) append(" 等")
+                append("。加密包请在详情页输密码")
+            }
+        }
+    }
+
     fun newFolder(name: String) = runAction("已创建文件夹 $name") {
         repo.createFolder(currentDir.value, name)
         null
@@ -142,12 +204,13 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
         "已导出 $count 项到所选文件夹（保留目录结构）"
     }
 
-    fun compressSelected(zipName: String, password: String?) = runAction("已生成 $zipName.zip") {
-        val entries = repo.entriesByIds(selectedIds())
-        require(entries.isNotEmpty()) { "请先选择要压缩的项目" }
-        graph.archives.compressToVault(entries, zipName, currentDir.value, password)
-        null
-    }
+    fun compressSelected(zipName: String, password: String?, level: ArchiveCompression) =
+        runAction("已生成 $zipName.zip") {
+            val entries = repo.entriesByIds(selectedIds())
+            require(entries.isNotEmpty()) { "请先选择要压缩的项目" }
+            graph.archives.compressToVault(entries, zipName, currentDir.value, password, level)
+            null
+        }
 
     fun importFiles(uris: List<Uri>, deleteSource: Boolean) =
         graph.importer.importFiles(uris, currentDir.value, deleteSource)

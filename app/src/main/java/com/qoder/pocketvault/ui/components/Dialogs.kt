@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -30,6 +31,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import com.qoder.pocketvault.core.formatBytes
+import com.qoder.pocketvault.data.ArchiveCompression
 import androidx.compose.ui.unit.dp
 
 /** 通用文本输入对话框：新建文件夹、重命名都用它。 */
@@ -71,21 +74,36 @@ fun TextInputDialog(
     )
 }
 
-/** 压缩对话框：包名 + 可选密码（AES-256）。 */
+/** 压缩对话框：包名 + 压缩级别 + 可选密码（AES-256），并先把"要打包多少东西"显示出来。 */
 @Composable
 fun CompressDialog(
     defaultName: String,
+    itemCount: Int,
+    totalBytes: Long,
     onDismiss: () -> Unit,
-    onConfirm: (name: String, password: String?) -> Unit,
+    onConfirm: (name: String, password: String?, level: ArchiveCompression) -> Unit,
 ) {
     var name by remember { mutableStateOf(defaultName) }
     var password by remember { mutableStateOf("") }
+    var level by remember { mutableStateOf(ArchiveCompression.NORMAL) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("压缩为 zip") },
         text = {
             Column {
+                Text(
+                    "将打包 $itemCount 项 · 合计 ${formatBytes(totalBytes)}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("压缩包名称") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
+                Text("压缩级别", style = MaterialTheme.typography.labelLarge)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ArchiveCompression.values().forEach { option ->
+                        FilterChip(option.label, option == level) { level = option }
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = password,
@@ -96,11 +114,15 @@ fun CompressDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(6.dp))
-                Text("加密只保护压缩包本身，文件库里的原始条目不会被加密。", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    if (level == ArchiveCompression.STORE) "「存储」只打包不压缩，加密时可正常读取。"
+                    else "加密只保护压缩包本身，文件库里的原始条目不会被加密。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         },
         confirmButton = {
-            TextButton(onClick = { if (name.isNotBlank()) onConfirm(name.trim(), password.ifBlank { null }) }) { Text("压缩") }
+            TextButton(onClick = { if (name.isNotBlank()) onConfirm(name.trim(), password.ifBlank { null }, level) }) { Text("压缩") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )

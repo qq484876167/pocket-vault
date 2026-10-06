@@ -274,7 +274,12 @@ fun EntryList(
 /** 选择模式的替代标题栏；动作以列表描述，页面负责派发。 */
 data class SelectionMenuItem(val label: String, val action: SelectionAction)
 
-enum class SelectionAction { MOVE, COPY, RENAME, TRASH, EXPORT_PUBLIC, EXPORT_TREE, MOVE_OUT, COMPRESS, FAVORITE, RESTORE, DELETE_FOREVER, EMPTY_TRASH }
+enum class SelectionAction {
+    MOVE, COPY, RENAME, TRASH, EXPORT_PUBLIC, EXPORT_TREE, MOVE_OUT, COMPRESS,
+    /** 批量解压：只在选中项里含压缩包时出现 */
+    EXTRACT,
+    FAVORITE, RESTORE, DELETE_FOREVER, EMPTY_TRASH
+}
 
 @Composable
 fun SelectionBar(
@@ -381,15 +386,18 @@ fun VaultButton(
     modifier: Modifier = Modifier,
     filled: Boolean = true,
     destructive: Boolean = false,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(22.dp)
     val background = when {
+        !enabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         destructive -> MaterialTheme.colorScheme.error
         filled -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.surfaceVariant
     }
     val content = when {
+        !enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
         destructive -> MaterialTheme.colorScheme.onError
         filled -> MaterialTheme.colorScheme.onPrimary
         else -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -398,7 +406,7 @@ fun VaultButton(
         modifier = modifier
             .clip(shape)
             .background(background)
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 20.dp, vertical = 11.dp),
     ) {
         Text(label, style = MaterialTheme.typography.labelLarge, color = content)

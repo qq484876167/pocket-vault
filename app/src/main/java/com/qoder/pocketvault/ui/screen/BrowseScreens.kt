@@ -39,6 +39,7 @@ import com.qoder.pocketvault.core.FileKind
 import com.qoder.pocketvault.core.formatBytes
 import com.qoder.pocketvault.data.StorageReport
 import com.qoder.pocketvault.data.db.ListOptions
+import com.qoder.pocketvault.data.db.VaultEntry
 import com.qoder.pocketvault.data.db.SortField
 import com.qoder.pocketvault.ui.LocalNavigator
 import com.qoder.pocketvault.ui.components.FilterChip
@@ -75,6 +76,7 @@ fun LibraryScreen(vm: LibraryViewModel) {
     val entries by vm.entries.collectAsStateWithLifecycle()
     val report by vm.report.collectAsStateWithLifecycle()
     val navigator = LocalNavigator.current
+    var archiveSheetFor by remember { mutableStateOf<VaultEntry?>(null) }
 
     BrowserHost(
         vm = vm,
@@ -100,11 +102,15 @@ fun LibraryScreen(vm: LibraryViewModel) {
         emptyTitle = if (tab == LibraryTab.RECENTS) "还没有导入过内容" else "${tab.label}里还没有内容",
         emptyHint = "点右下角「导入」选择文件或整个文件夹；导入后的内容只在本应用里可见。",
         onOpen = { entry ->
-            if (entry.isFolder) navigator?.openFolder(entry.id)
-            else if (openInViewer(entry)) navigator?.openViewer(entry.id)
-            else navigator?.openDetail(entry.id)
+            when {
+                entry.kind == FileKind.ARCHIVE -> archiveSheetFor = entry
+                entry.isFolder -> navigator?.openFolder(entry.id)
+                openInViewer(entry) -> navigator?.openViewer(entry.id)
+                else -> navigator?.openDetail(entry.id)
+            }
         },
     )
+    ArchiveOpenSheet(vm, archiveSheetFor) { archiveSheetFor = null }
 }
 
 @Composable
@@ -157,6 +163,7 @@ fun FolderScreen(vm: FolderViewModel) {
     val folderId by vm.folderId.collectAsStateWithLifecycle()
     val navigator = LocalNavigator.current
     var sortMenu by remember { mutableStateOf(false) }
+    var archiveSheetFor by remember { mutableStateOf<VaultEntry?>(null) }
 
     // 与系统文件管理器一致：进入子目录后按返回键先回上一级，回到根目录才退出页面
     androidx.activity.compose.BackHandler(enabled = path.isNotEmpty()) { vm.goUp() }
@@ -259,11 +266,18 @@ fun FolderScreen(vm: FolderViewModel) {
         emptyTitle = "这个文件夹是空的",
         emptyHint = "可以用右下角的「导入」把文件或整个文件夹放进来，目录层级会原样保留。",
         onOpen = { entry ->
-            if (entry.isFolder) vm.open(entry.relativePath)
-            else if (openInViewer(entry)) navigator?.openViewer(entry.id)
-            else navigator?.openDetail(entry.id)
+            when {
+                entry.kind == FileKind.ARCHIVE -> archiveSheetFor = entry
+                entry.isFolder -> vm.open(entry.relativePath)
+                openInViewer(entry) -> navigator?.openViewer(entry.id)
+                else -> navigator?.openDetail(entry.id)
+            }
         },
     )
+
+    archiveSheetFor?.let { archive ->
+        ArchiveOpenSheet(vm, archive) { archiveSheetFor = null }
+    }
 }
 
 // ------------------------------------------------------------------ 搜索
@@ -276,6 +290,7 @@ fun SearchScreen(vm: SearchViewModel) {
     val scope by vm.scope.collectAsStateWithLifecycle()
     val navigator = LocalNavigator.current
     val scopeName = scope?.name
+    var archiveSheetFor by remember { mutableStateOf<VaultEntry?>(null) }
 
     BrowserHost(
         vm = vm,
@@ -316,9 +331,14 @@ fun SearchScreen(vm: SearchViewModel) {
             "只搜「$scopeName」及其所有子目录；点上面的范围标签可以回到全库搜索。"
         },
         onOpen = { entry ->
-            if (openInViewer(entry)) navigator?.openViewer(entry.id) else navigator?.openDetail(entry.id)
+            when {
+                entry.kind == FileKind.ARCHIVE -> archiveSheetFor = entry
+                openInViewer(entry) -> navigator?.openViewer(entry.id)
+                else -> navigator?.openDetail(entry.id)
+            }
         },
     )
+    ArchiveOpenSheet(vm, archiveSheetFor) { archiveSheetFor = null }
 }
 
 // ------------------------------------------------------------------ 回收站
