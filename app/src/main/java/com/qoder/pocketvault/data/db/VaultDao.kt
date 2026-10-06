@@ -137,6 +137,28 @@ interface VaultDao {
     @Query("SELECT COUNT(*) FROM entries WHERE state = 'ACTIVE' AND kind = 'FOLDER'")
     suspend fun folderCount(): Int
 
+    /** 目录选择器：某个目录的直接子目录（名称排序在 Kotlin 侧按拼音完成）。 */
+    @Query(
+        """
+        SELECT * FROM entries
+        WHERE state = 'ACTIVE' AND kind = 'FOLDER' AND parentId = :parentId
+        """
+    )
+    suspend fun childFolders(parentId: Long): List<VaultEntry>
+
+    /**
+     * 一次聚合拿到多个目录的直接子项数。
+     * 逐行 COUNT 会变成 N+1（一个 200 子目录的层就是 200 次查询），所以按 parentId 分组一次查完。
+     */
+    @Query(
+        """
+        SELECT parentId AS parent, COUNT(*) AS total FROM entries
+        WHERE state = 'ACTIVE' AND parentId IN (:parentIds)
+        GROUP BY parentId
+        """
+    )
+    suspend fun childCounts(parentIds: List<Long>): List<ChildCount>
+
     @Query("UPDATE entries SET favorite = :favorite WHERE id = :id")
     suspend fun setFavorite(id: Long, favorite: Boolean)
 }

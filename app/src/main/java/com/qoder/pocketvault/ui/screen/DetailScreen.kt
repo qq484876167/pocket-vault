@@ -68,7 +68,6 @@ fun DetailScreen(vm: DetailViewModel) {
     val entry by vm.entry.collectAsStateWithLifecycle()
     val preview by vm.preview.collectAsStateWithLifecycle()
     val archive by vm.archive.collectAsStateWithLifecycle()
-    val folders by vm.folders.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val navigator = LocalNavigator.current
@@ -141,7 +140,7 @@ fun DetailScreen(vm: DetailViewModel) {
                     password = archive.password,
                     onPasswordChange = vm::setPassword,
                     targetLabel = folderDisplayName(current.relativePath.substringBeforeLast('/', "")),
-                    folders = folders,
+                    picker = vm.folderTargets.ports(),
                     onList = vm::submitPassword,
                     onPlan = { target, specific -> vm.planExtract(target, specific) {} },
                     onExtract = { target, specific, policy, merge -> vm.extract(target, specific, policy, merge) },

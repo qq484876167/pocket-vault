@@ -41,6 +41,9 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
 
     protected val repo: VaultRepository = graph.repo
 
+    /** 目标目录选择器的后端：逐层读目录、记历史、在选择器里建目录。 */
+    val folderTargets = FolderTargetBook(repo, graph.prefs, viewModelScope)
+
     private val _selection = MutableStateFlow<Set<Long>>(emptySet())
     val selection: StateFlow<Set<Long>> = _selection
 
@@ -49,9 +52,6 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
-
-    private val _folderChoices = MutableStateFlow<List<String>>(listOf(""))
-    val folderChoices: StateFlow<List<String>> = _folderChoices
 
     /** 批量操作的默认目录（移动/复制/解压/压缩产物的落点）。 */
     abstract val currentDir: StateFlow<String>
@@ -92,14 +92,6 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
             _message.value = outcome.fold(onFailure = { error -> error.userMessage() }, onSuccess = { it })
                 ?: successHint
             onSelectionCleared()
-            reloadFolderChoices()
-        }
-    }
-
-    fun reloadFolderChoices() {
-        viewModelScope.launch {
-            val paths = runCatching { repo.folderPaths() }.getOrDefault(emptyList())
-            _folderChoices.value = listOf("") + paths
         }
     }
 
@@ -153,6 +145,9 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
                 onFailure = { failures += "${archive.name}（${it.userMessage()}）" },
             )
         }
+        if (target == ExtractTarget.SPECIFIC && done > 0) {
+            folderTargets.remember(VaultPaths.normalizeRelative(specific.orEmpty()))
+        }
         buildString {
             append("已解压 $done/${archives.size} 个压缩包，共 $files 个文件")
             if (failures.isNotEmpty()) {
@@ -176,11 +171,13 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
 
     fun moveToSelected(destDir: String) = runAction {
         val count = repo.move(selectedIds(), destDir)
+        if (count > 0) folderTargets.remember(destDir)
         "已移动 $count 项"
     }
 
     fun copyToSelected(destDir: String) = runAction {
         val count = repo.copyInto(selectedIds(), destDir)
+        if (count > 0) folderTargets.remember(destDir)
         "已复制 $count 项到 ${destDir.ifBlank { "文件库根目录" }}"
     }
 
@@ -234,9 +231,6 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
         }
     }
 
-    init {
-        reloadFolderChoices()
-    }
 }
 
 // ------------------------------------------------------------------ 目录浏览

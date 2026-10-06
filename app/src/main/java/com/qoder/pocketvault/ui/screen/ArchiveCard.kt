@@ -53,6 +53,8 @@ import com.qoder.pocketvault.data.ExtractPlan
 import com.qoder.pocketvault.data.ExtractSummary
 import com.qoder.pocketvault.data.db.VaultEntry
 import com.qoder.pocketvault.ui.LocalNavigator
+import com.qoder.pocketvault.ui.components.FolderPickerPorts
+import com.qoder.pocketvault.ui.components.FolderPickerSheet
 import com.qoder.pocketvault.ui.components.FilterChip
 import com.qoder.pocketvault.ui.components.VaultButton
 import com.qoder.pocketvault.ui.vm.ArchiveUiState
@@ -74,7 +76,7 @@ fun ArchiveCard(
     password: String,
     onPasswordChange: (String) -> Unit,
     targetLabel: String,
-    folders: List<Pair<String, String>>,
+    picker: FolderPickerPorts,
     onList: () -> Unit,
     onPlan: (ExtractTarget, String?) -> Unit,
     onExtract: (ExtractTarget, String?, ConflictPolicy, Boolean) -> Unit,
@@ -92,6 +94,8 @@ fun ArchiveCard(
     var menuFor by remember { mutableStateOf<ArchiveItem?>(null) }
     var preview by remember { mutableStateOf<EntryPreview?>(null) }
     var folderConflictAsked by remember { mutableStateOf(false) }
+    var browsing by remember { mutableStateOf(false) }
+    var pickedSpecific by remember { mutableStateOf(false) }
     val passwordField = remember { FocusRequester() }
 
     val plan = state.plan
@@ -170,20 +174,14 @@ fun ArchiveCard(
             }
             if (target == ExtractTarget.SPECIFIC) {
                 Spacer(Modifier.height(4.dp))
-                folders.forEach { (path, label) ->
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                specific = path
-                                onPlan(ExtractTarget.SPECIFIC, path.ifBlank { null })
-                            }
-                            .padding(vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                        if (path == specific) Text("✓", style = MaterialTheme.typography.bodySmall)
-                    }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (pickedSpecific) specificPathLabel(specific) else "还没选目标目录",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                    )
+                    TextButton(onClick = { browsing = true }) { Text("浏览…") }
                 }
             }
 
@@ -417,6 +415,20 @@ fun ArchiveCard(
             },
         )
     }
+
+    if (browsing) {
+        FolderPickerSheet(
+            ports = picker,
+            confirmLabel = "解压到这里",
+            onDismiss = { browsing = false },
+            onPick = { path ->
+                browsing = false
+                specific = path
+                pickedSpecific = true
+                onPlan(ExtractTarget.SPECIFIC, path.ifBlank { null })
+            },
+        )
+    }
 }
 
 private fun planLine(plan: ExtractPlan): String = buildString {
@@ -443,7 +455,7 @@ private fun summaryLine(summary: ExtractSummary): String = buildString {
 @Composable
 fun ArchiveActionSheet(
     fileName: String,
-    folders: List<String>,
+    picker: FolderPickerPorts,
     onExtract: (ExtractTarget, String?) -> Unit,
     onOpenContents: () -> Unit,
     onDismiss: () -> Unit,
@@ -475,52 +487,30 @@ fun ArchiveActionSheet(
         }
     }
     if (picking) {
-        var chosen by remember { mutableStateOf(folders.firstOrNull().orEmpty()) }
-        AlertDialog(
-            onDismissRequest = { picking = false },
-            title = { Text("解压到哪个文件夹") },
-            text = {
-                Column {
-                    Text("只列库内已有文件夹；想放到手机里的其他位置，先解压再用「移出本应用」。", style = MaterialTheme.typography.bodySmall)
-                    Spacer(Modifier.height(8.dp))
-                    folders.forEach { path ->
-                        val label = if (path.isEmpty()) "文件库根目录" else path.replace("/", " ›")
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable { chosen = path }
-                                .padding(vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                            if (path == chosen) Text("✓")
-                        }
-                    }
-                }
+        FolderPickerSheet(
+            ports = picker,
+            confirmLabel = "解压到这里",
+            onDismiss = { picking = false },
+            onPick = { path ->
+                picking = false
+                onExtract(ExtractTarget.SPECIFIC, VaultPaths.normalizeRelative(path))
+                onDismiss()
             },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        picking = false
-                        onExtract(ExtractTarget.SPECIFIC, VaultPaths.normalizeRelative(chosen))
-                        onDismiss()
-                    },
-                ) { Text("解压到这里") }
-            },
-            dismissButton = { TextButton(onClick = { picking = false }) { Text("取消") } },
         )
     }
 }
 
-/** 单击压缩包的统一入口：文件库、目录、搜索结果三处共用同一套操作菜单。 */
+/** 选中的目标目录怎么显示：根目录说人话，其余用 › 分段。 */
+private fun specificPathLabel(path: String): String =
+    if (path.isEmpty()) "文件库根目录" else "已选：${path.replace("/", " › ")}"
+
 @Composable
 fun ArchiveOpenSheet(vm: BrowseViewModel, entry: VaultEntry?, onDismiss: () -> Unit) {
     if (entry == null) return
-    val folders by vm.folderChoices.collectAsStateWithLifecycle()
     val navigator = LocalNavigator.current
     ArchiveActionSheet(
         fileName = entry.name,
-        folders = folders,
+        picker = vm.folderTargets.ports(),
         onExtract = { target, specific -> vm.extractArchives(listOf(entry), target, specific) },
         onOpenContents = { navigator?.openDetail(entry.id) },
         onDismiss = onDismiss,

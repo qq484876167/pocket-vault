@@ -90,6 +90,9 @@ class DetailViewModel(
 
     private val repo = graph.repo
 
+    /** 解压目标目录选择器的后端：逐层读目录、记最近用过的目标、在选择器里建目录。 */
+    val folderTargets = FolderTargetBook(repo, graph.prefs, viewModelScope)
+
     private val _entry = MutableStateFlow<VaultEntry?>(null)
     val entry: StateFlow<VaultEntry?> = _entry
 
@@ -104,10 +107,6 @@ class DetailViewModel(
 
     /** 上次会话被杀时可能留下过预览文件，进入压缩包界面时先扫一次。 */
     private var previewCacheSwept = false
-
-    private val _folders = MutableStateFlow<List<Pair<String, String>>>(emptyList())
-    /** 库内可当解压目标的文件夹。 */
-    val folders: StateFlow<List<Pair<String, String>>> = _folders
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
@@ -134,16 +133,6 @@ class DetailViewModel(
     }
 
     fun physicalFile(): File? = _entry.value?.let { runCatching { repo.physicalFile(it) }.getOrNull() }
-
-    /** 解压目标候选：库内已有文件夹，外加"文件库根目录"。 */
-    fun loadFolderChoices() {
-        if (_folders.value.isNotEmpty()) return
-        viewModelScope.launch {
-            val paths = runCatching { repo.folderPaths() }.getOrDefault(emptyList())
-            _folders.value = (listOf("" to "文件库根目录") + paths.map { it to it.replace("/", " ›") })
-                .distinctBy { it.first }
-        }
-    }
 
     /** 包所在目录（解压默认落在这里面，或建同名新文件夹）。 */
     fun containingFolder(): String =
@@ -278,6 +267,7 @@ class DetailViewModel(
             }
             decision.fold(
                 onSuccess = { (dest, folderName) ->
+                    if (target == ExtractTarget.SPECIFIC) folderTargets.remember(dest)
                     runExtraction(file, dest, folderName, operationPassword(), policy)
                 },
                 onFailure = {
