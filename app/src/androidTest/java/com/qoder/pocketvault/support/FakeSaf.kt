@@ -154,7 +154,8 @@ class FakeSafProvider : ContentProvider() {
         }
 
         METHOD_DELETE -> {
-            seen += "call:$method arg=$arg extras=${extras?.keySet()?.joinToString()}"
+            // 一次 CI 就能看出这一版 AOSP 把 docId 放在哪儿：arg 还是某个 extras key
+            seen += "delete-raw:arg=<$arg> keys=${extras?.keySet()?.sorted()?.joinToString()}"
             performDelete(arg, extras)
             Bundle()
         }
@@ -170,7 +171,7 @@ class FakeSafProvider : ContentProvider() {
     }
 
     private fun performDelete(docId: String?, extras: Bundle?) {
-        val id = docId ?: extras?.getString(KEY_DOC_ID) ?: "unknown"
+        val id = docId ?: extras?.getString(KEY_DOC_ID) ?: extras?.getString(KEY_DOC_ID_ALT) ?: "unknown"
         deleteAttempts += id
         val node = nodes[id]
         if (node == null) {
@@ -244,6 +245,7 @@ class FakeSafProvider : ContentProvider() {
         const val KEY_FAIL_IDS = "failDocIds"
         const val KEY_FAIL_AFTER = "failAfter"
         const val KEY_DOC_ID = "document_id"
+        const val KEY_DOC_ID_ALT = "android:document_id"
 
         const val KEY_ATTEMPTS = "attempts"
         const val KEY_DELETED = "deleted"
