@@ -72,6 +72,8 @@ data class ExtractSummary(
     val createdEntryIds: List<Long>,
     /** 中途失败的原因；null 表示顺利跑完。失败时已解压的部分仍留在库里等用户决定。 */
     val error: String?,
+    /** 因体积超限被拒的第一个条目的原因；界面用它解释"跳过"到底是为什么跳过。 */
+    val refusalNote: String? = null,
 ) {
     val partial: Boolean get() = error != null
 }
@@ -254,6 +256,7 @@ class ArchiveEngine(private val repo: VaultRepository) {
             createdFolder = createdFolder,
             createdEntryIds = ids,
             error = error,
+            refusalNote = tally.lastRefusal,
         )
     }
 

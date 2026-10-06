@@ -414,6 +414,7 @@ private fun summaryLine(summary: ExtractSummary): String = buildString {
     if (summary.renamed > 0) append("；改名 ${summary.renamed} 项")
     if (summary.overwritten > 0) append("；覆盖 ${summary.overwritten} 项（原件在回收站）")
     if (summary.skipped > 0) append("；跳过 ${summary.skipped} 项")
+    summary.refusalNote?.let { append("（$it）") }
     if (summary.skippedLinks > 0) append("；链接 ${summary.skippedLinks} 项未落盘")
 }
 
