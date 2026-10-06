@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.PickVisualMediaRequest
@@ -85,6 +86,10 @@ fun BrowserHost(
     val message by vm.message.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val snackbar = LocalSnackbar.current
+
+    // 多选状态下按返回键应该只退出多选；不接管的话 NavHost 会直接 pop 起始目的地，
+    // 表现就是"选了几个文件，按一下返回整个应用退到桌面"
+    BackHandler(enabled = selection.isNotEmpty()) { vm.clearSelection() }
 
     var sheetMode by remember { mutableStateOf(SheetMode.NONE) }
     var renameTarget by remember { mutableStateOf<VaultEntry?>(null) }

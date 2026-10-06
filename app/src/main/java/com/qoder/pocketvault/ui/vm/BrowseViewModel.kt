@@ -15,11 +15,13 @@ import com.qoder.pocketvault.data.db.ListOptions
 import com.qoder.pocketvault.data.db.ROOT_ID
 import com.qoder.pocketvault.data.db.VaultEntry
 import com.qoder.pocketvault.data.userMessage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -27,6 +29,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.scan
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -50,7 +53,7 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy
 
-    private val _message = MutableStateFlow<String?>(null)
+    protected val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
     /** 批量操作的默认目录（移动/复制/解压/压缩产物的落点）。 */
@@ -87,7 +90,7 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
         if (_busy.value) return
         _busy.value = true
         viewModelScope.launch {
-            val outcome = runCatching { block() }
+            val outcome = runCatching { block() }.onFailure { it.rethrowIfCancelled() }
             _busy.value = false
             _message.value = outcome.fold(onFailure = { error -> error.userMessage() }, onSuccess = { it })
                 ?: successHint
@@ -111,7 +114,8 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
         var files = 0
         val failures = ArrayList<String>()
         for (archive in archives) {
-            val file = runCatching { repo.physicalFile(archive) }.getOrNull()
+            val file = runCatching { repo.physicalFile(archive) }
+                .onFailure { it.rethrowIfCancelled() }.getOrNull()
             if (file == null) {
                 failures += "${archive.name}（取不到文件）"
                 continue
@@ -132,6 +136,7 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
                     folderName = folder,
                 )
             }
+                .onFailure { it.rethrowIfCancelled() }
             summary.fold(
                 onSuccess = { value ->
                     done++
@@ -259,7 +264,14 @@ class FolderViewModel(graph: AppGraph, folderId: Long) : BrowseViewModel(graph) 
     }
 
     val entries: StateFlow<List<VaultEntry>> =
-        combine(_path, _options) { path, options -> repo.observeFolder(path, options) }
+        combine(_path, _options) { path, options ->
+            repo.observeFolder(path, options).catch { cause ->
+                // ensureFolderPath 之类会在这里抛：宁可显示空列表加一条提示，
+                // 也不让整个 stateIn 作用域被一次读取异常打死
+                if (cause !is CancellationException) _message.value = "读取这个目录失败：${cause.userMessage()}"
+                emit(emptyList())
+            }
+        }
             .flatMapLatest { it }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -267,9 +279,14 @@ class FolderViewModel(graph: AppGraph, folderId: Long) : BrowseViewModel(graph) 
         .map { breadcrumbOf(it) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), listOf("" to "文件库"))
 
-    /** 当前目录的行 id，供"在本目录内搜索"传参用（路径不进取向参数，见 Navigator 注释）。 */
+    /**
+     * 当前目录的行 id，供"在本目录内搜索"传参用（路径不进取向参数，见 Navigator 注释）。
+     * 查失败时保留上一次的值：直接退回根目录会把"本目录内搜索"悄悄变成全库搜索。
+     */
     val folderId: StateFlow<Long> = _path
-        .mapLatest { runCatching { repo.folderIdFor(it) }.getOrDefault(ROOT_ID) }
+        .scan(ROOT_ID) { previous, path ->
+            runCatching { repo.folderIdFor(path) }.onFailure { it.rethrowIfCancelled() }.getOrDefault(previous)
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ROOT_ID)
 
     fun open(dirRelativePath: String) {
@@ -373,7 +390,11 @@ class SearchViewModel(graph: AppGraph, private val scopeFolderId: Long = ROOT_ID
             .debounce(220)
             .onEach { (text, kind, within) ->
                 _pending.value = text.isNotEmpty()
-                _results.value = if (text.isEmpty()) emptyList() else repo.search(text, kind, within)
+                val found = runCatching { repo.search(text, kind, within) }.onFailure { it.rethrowIfCancelled() }
+                if (found.isFailure && text.isNotEmpty()) {
+                    _message.value = "搜索失败：${found.exceptionOrNull()?.userMessage()}"
+                }
+                _results.value = found.getOrDefault(emptyList())
                 _pending.value = false
             }
             .launchIn(viewModelScope)

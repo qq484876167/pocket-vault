@@ -126,8 +126,12 @@ private fun VideoStage(
                 playing = false
             }
         } else if (prepared && !playing) {
-            runCatching { view.start() }
-                .onSuccess { playing = true }
+            runCatching { view.start() }.onSuccess {
+                playing = true
+                // 播完时 positionMs 被钉在结尾，而下面的 tick 是单调不减的：
+                // 不重新对齐的话，整个回放过程进度条和时间都卡在结尾
+                positionMs = view.currentPosition.toLong().coerceAtMost(durationMs)
+            }
         }
     }
 

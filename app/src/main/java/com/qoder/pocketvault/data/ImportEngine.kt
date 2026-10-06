@@ -454,7 +454,9 @@ class ImportEngine(
                 if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else -1L
             }
         }.getOrNull() ?: -1L
-        return if (size > 0) "one-off:$name:$size" else null
+        // 必须把 uri 一起算进签名：picker 场景只有名字和字节数，
+        // 两个不同来源、同名同大小的文件会被判成重复，后一个被静默丢掉
+        return if (size > 0) "one-off:$uri:$name:$size" else null
     }
 
     private fun persistReadPermission(treeUri: Uri, withWrite: Boolean) {

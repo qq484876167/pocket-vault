@@ -4,6 +4,9 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -457,7 +460,18 @@ fun BusyOverlay(visible: Boolean) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.28f)),
+            .background(Color.Black.copy(alpha = 0.28f))
+            // 忙的时候这一层必须把事件吃掉：否则底下的 FAB、列表行的长按菜单照样能点，
+            // 解压进行中去点"移入回收站"会把正在读的源文件挪走
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        event.changes.forEach { it.consume() }
+                    } while (event.changes.any { it.pressed })
+                }
+            },
         contentAlignment = Alignment.Center,
     ) {
         Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surface) {

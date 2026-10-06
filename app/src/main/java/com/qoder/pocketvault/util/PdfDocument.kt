@@ -9,7 +9,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.withLock
-import java.io.Closeable
 import java.io.File
 
 /**
@@ -22,7 +21,7 @@ import java.io.File
 class PdfDocument private constructor(
     private val descriptor: ParcelFileDescriptor,
     private val renderer: PdfRenderer,
-) : Closeable {
+) {
 
     val pageCount: Int = renderer.pageCount
 
@@ -66,7 +65,11 @@ class PdfDocument private constructor(
         cache.evictAll()
     }
 
-    override fun close() {
+    /**
+     * 关闭也要过同一把锁：退出时可能正好有一页在 renderAt（阻塞、不可取消），
+     * 和 renderer.close() 并发会抛异常甚至 native 崩溃。
+     */
+    suspend fun closeAsync() = renderLock.withLock {
         cache.evictAll()
         runCatching { renderer.close() }
         runCatching { descriptor.close() }
