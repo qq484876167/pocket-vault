@@ -40,7 +40,7 @@ class ExportEngine(
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, entry.name)
                 put(MediaStore.MediaColumns.MIME_TYPE, entry.mimeType ?: FileKind.guessMime(entry.name))
-                put(MediaStore.MediaColumns.RELATIVE_PATH, relativeBucketFor(entry))
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativeBucketFor(entry) + "/")
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
             val uri = cr.insert(collection, values) ?: throw IOException("系统拒绝了写入请求")
@@ -126,7 +126,12 @@ class ExportEngine(
         if (!source.isFile) return false
         // 目标已存在且删不掉时宁可失败，也不要在对方目录里悄悄留两份
         val existing = parent.findFile(entry.name)
-        if (existing != null && !existing.delete()) return false
+        if (existing != null) {
+            // 同名的是目录就到此为止：个别提供器的 delete() 会连着里面的内容一起递归删，
+            // 那删掉的是用户自己的文件，比这一项导出失败严重得多
+            if (existing.isDirectory) return false
+            if (!existing.delete()) return false
+        }
         val target = parent.createFile(entry.mimeType ?: FileKind.guessMime(entry.name), entry.name)
             ?: return false
         cr.openOutputStream(target.uri)?.use { out ->

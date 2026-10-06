@@ -170,7 +170,10 @@ fun BrowserHost(
                                 treePurpose = TreePurpose.MOVE_OUT
                                 treePicker.launch(null)
                             }
-                            SelectionAction.RENAME -> renameTarget = entries.firstOrNull { it.id == selection.first() }
+                            SelectionAction.RENAME -> {
+                                val id = selection.firstOrNull()
+                                renameTarget = if (id == null) null else entries.firstOrNull { it.id == id }
+                            }
                             SelectionAction.COMPRESS -> showCompress = true
                             SelectionAction.EXTRACT -> vm.extractArchives(
                                 picked = entries.filter { it.id in selection },

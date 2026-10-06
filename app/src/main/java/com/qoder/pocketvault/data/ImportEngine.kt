@@ -14,12 +14,14 @@ import com.qoder.pocketvault.core.joinRelative
 import com.qoder.pocketvault.data.db.EntryState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
@@ -250,7 +252,9 @@ class ImportEngine(
         val written = try {
             streamToFile(source.uri, allocation.tempFile, onBytes)
         } catch (e: Exception) {
-            repo.discardAllocation(allocation)
+            // 取消时上下文已不可用，直接调用挂起的 discardAllocation 会在入口就抛：
+            // .part 清不掉，还会顶掉真正的失败原因
+            withContext(NonCancellable) { repo.discardAllocation(allocation) }
             throw e
         }
         // 这里不再拿"写入字节数 0"当失败：空文件（空 txt / log）本来就该能入库，

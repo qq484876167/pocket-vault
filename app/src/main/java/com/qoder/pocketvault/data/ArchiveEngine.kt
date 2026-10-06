@@ -7,6 +7,7 @@ import com.qoder.pocketvault.data.db.VaultEntry
 import java.io.File
 import java.io.FileOutputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -386,7 +387,8 @@ class ArchiveEngine(private val repo: VaultRepository) {
                 mimeType = "application/zip",
             )
         } catch (e: Exception) {
-            repo.discardAllocation(allocation)
+            // 取消时上下文已经不可用，挂起函数会在入口就抛，.part 反而清不掉
+            withContext(NonCancellable) { repo.discardAllocation(allocation) }
             throw e
         }
     }
@@ -482,7 +484,9 @@ class ArchiveEngine(private val repo: VaultRepository) {
             if (trashedId != null) tally.overwritten++
             committed.id
         } catch (e: Exception) {
-            repo.discardAllocation(allocation)
+            // 取消时上下文已不可用，直接调用挂起的 discardAllocation 会在入口就抛：
+            // .part 清不掉，还会顶掉真正的失败原因
+            withContext(NonCancellable) { repo.discardAllocation(allocation) }
             // 取消要原样传出去，不能被包装成"解压失败"
             if (trashedId != null && e !is kotlinx.coroutines.CancellationException) {
                 throw ArchiveOpenException("${e.messageSafe()}；被替换的原文件已移入回收站，可以在回收站还原")
