@@ -78,6 +78,9 @@ class IndexVerifier(
             if (doomed.isNotEmpty()) {
                 dropped += doomed.size
                 dao.deleteByIds(doomed)
+                // 对账剔除也是"行真的没了"：记账表里的进度 / 书签 / 统计要一起清，
+                // 不然表里会攒下一堆指向不存在条目的孤儿行。
+                db.purgeAccountRows(doomed)
             }
         }
 

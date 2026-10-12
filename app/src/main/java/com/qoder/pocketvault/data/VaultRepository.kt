@@ -16,6 +16,11 @@ import com.qoder.pocketvault.data.db.TRASH_PATH_PREFIX
 import com.qoder.pocketvault.data.db.VaultDao
 import com.qoder.pocketvault.data.db.VaultEntry
 import com.qoder.pocketvault.data.db.ListOptions
+import com.qoder.pocketvault.data.db.BookStat
+import com.qoder.pocketvault.data.db.DayStat
+import com.qoder.pocketvault.data.db.MediaPosition
+import com.qoder.pocketvault.data.db.PdfBookmark
+import com.qoder.pocketvault.data.db.ReadingStat
 import com.qoder.pocketvault.data.db.SortField
 import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +32,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.Collator
+import java.time.LocalDate
 import java.util.Locale
 
 /** 导入前的落位信息：唯一逻辑路径 + 正式文件 + 临时文件。 */
@@ -43,6 +49,17 @@ data class StorageReport(
     val usedBytes: Long,
     val freeBytes: Long,
     val fileCount: Int,
+)
+
+/**
+ * 阅读统计页要的四个数：总共读了多久、读过几天、按书排行、最近若干天各读了多久。
+ * 天数与总时长都由 SQL 聚合出来，界面不再自己拼。
+ */
+data class ReadingSummary(
+    val totalSeconds: Int,
+    val readDays: Int,
+    val perBook: List<BookStat>,
+    val days: List<DayStat>,
 )
 
 /** 目录选择器里的一行：路径、显示名、直接子项数。 */
@@ -527,9 +544,10 @@ class VaultRepository(
         db.withTransaction {
             for (id in ids) {
                 val entry = dao.byId(id) ?: continue
-                val doomed = collectDescendantIds(entry.id) + entry.id
                 runCatching { physicalFile(entry).deleteRecursively() }
-                dao.deleteByIds(doomed.distinct())
+                val doomed = (collectDescendantIds(entry.id) + entry.id).distinct()
+                dao.deleteByIds(doomed)
+                db.purgeAccountRows(doomed)
             }
         }
     }
@@ -630,6 +648,77 @@ class VaultRepository(
     suspend fun removeBookmark(entryId: Long, chapter: Int, paragraph: Int) =
         withContext(Dispatchers.IO) { db.readingBookmarkDao().delete(entryId, chapter, paragraph) }
 
+    // ------------------------------------------------------ 播放位置 / PDF 书签 / 阅读统计
+
+    /**
+     * 视频、音频看到第几毫秒。进度按 entryId 存，而 entryId 在移动 / 重命名后不变，
+     * 所以换个目录回来照样接得上。
+     */
+    suspend fun saveMediaPosition(entryId: Long, positionMillis: Long, durationMillis: Long) =
+        withContext(Dispatchers.IO) {
+            db.mediaPositionDao().save(
+                MediaPosition(
+                    entryId = entryId,
+                    positionMillis = positionMillis.coerceAtLeast(0L),
+                    durationMillis = durationMillis.coerceAtLeast(0L),
+                    updatedAt = System.currentTimeMillis(),
+                )
+            )
+        }
+
+    suspend fun mediaPosition(entryId: Long): MediaPosition? =
+        withContext(Dispatchers.IO) { db.mediaPositionDao().byEntry(entryId) }
+
+    suspend fun pdfBookmarks(entryId: Long): List<PdfBookmark> =
+        withContext(Dispatchers.IO) { db.pdfBookmarkDao().forEntry(entryId) }
+
+    /** 同一页重复加书签只刷新标签，不会堆出重复行（主键就是 entryId + 页码）。 */
+    suspend fun addPdfBookmark(entryId: Long, page: Int, label: String) =
+        withContext(Dispatchers.IO) {
+            db.pdfBookmarkDao().save(
+                PdfBookmark(
+                    entryId = entryId,
+                    pageIndex = page,
+                    label = label,
+                    createdAt = System.currentTimeMillis(),
+                )
+            )
+        }
+
+    suspend fun removePdfBookmark(entryId: Long, page: Int) =
+        withContext(Dispatchers.IO) { db.pdfBookmarkDao().delete(entryId, page) }
+
+    /**
+     * 把一段阅读时长累计到"这本书 · 今天"这一格。
+     * 写盘的节奏由调用方掌握（切章、退出页面时才调），不能每秒都来一次——
+     * 那是往 flash 上写无意义的频繁小事务。
+     */
+    suspend fun addReadingTime(entryId: Long, seconds: Int, blocks: Int) = withContext(Dispatchers.IO) {
+        if (seconds <= 0 && blocks <= 0) return@withContext
+        val day = LocalDate.now().toString()
+        val statDao = db.readingStatDao()
+        val current = statDao.byEntryDay(entryId, day)
+        statDao.save(
+            ReadingStat(
+                entryId = entryId,
+                day = day,
+                seconds = (current?.seconds ?: 0) + seconds,
+                blocks = (current?.blocks ?: 0) + blocks,
+            )
+        )
+    }
+
+    /** 统计页一次读全，别在界面上逐本书拼查询。 */
+    suspend fun readingSummary(recentDays: Int = 60): ReadingSummary = withContext(Dispatchers.IO) {
+        val statDao = db.readingStatDao()
+        ReadingSummary(
+            totalSeconds = statDao.totalSeconds(),
+            readDays = statDao.activeDays(),
+            perBook = statDao.perBook(),
+            days = statDao.recentDays(recentDays),
+        )
+    }
+
     // ---------------------------------------------------------------- 辅助
 
     fun physicalFile(entry: VaultEntry): File = when (entry.state) {
@@ -700,7 +789,9 @@ class VaultRepository(
             }
         }
         doomed += viaId
-        dao.deleteByIds(doomed.distinct())
+        val ids = doomed.distinct()
+        dao.deleteByIds(ids)
+        db.purgeAccountRows(ids)
     }
 
     /** 依据 parentId 链重建子树的 relativePath（移动 / 恢复后调用）。 */

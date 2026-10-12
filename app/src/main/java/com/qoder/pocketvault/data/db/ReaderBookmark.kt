@@ -29,4 +29,7 @@ interface ReadingBookmarkDao {
 
     @Query("DELETE FROM reading_bookmarks WHERE entryId = :entryId")
     suspend fun clear(entryId: Long)
+
+    @Query("DELETE FROM reading_bookmarks WHERE entryId IN (:ids)")
+    suspend fun forgetEntries(ids: List<Long>)
 }

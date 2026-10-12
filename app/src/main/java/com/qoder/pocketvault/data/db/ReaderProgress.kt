@@ -26,4 +26,8 @@ interface ReadingProgressDao {
 
     @Query("DELETE FROM reading_progress WHERE entryId = :entryId")
     suspend fun clear(entryId: Long)
+
+    /** 索引行被真正销毁时连记账一起清：不留"条目没了、进度还在表里"的孤儿行。 */
+    @Query("DELETE FROM reading_progress WHERE entryId IN (:ids)")
+    suspend fun forgetEntries(ids: List<Long>)
 }
