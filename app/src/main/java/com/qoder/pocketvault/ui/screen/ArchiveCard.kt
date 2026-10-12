@@ -164,7 +164,7 @@ fun ArchiveCard(
             ) {
                 FilterChip("同名新文件夹（推荐）", target == ExtractTarget.NEW_FOLDER) {
                     target = ExtractTarget.NEW_FOLDER
-                    plan?.let { if (it.suggestedFolder.isNotEmpty()) onPlan(target, null) }
+                    plan?.let { if (it.suggestedFolder != null) onPlan(target, null) }
                 }
                 FilterChip("当前文件夹（$targetLabel）", target == ExtractTarget.CURRENT_FOLDER) {
                     target = ExtractTarget.CURRENT_FOLDER
@@ -384,16 +384,21 @@ fun ArchiveCard(
         )
     }
 
-    if (folderConflictAsked && plan?.suggestedFolder != null) {
+    if (folderConflictAsked && plan != null) {
+        // suggestedFolder 为 null 表示"改名这条路真的走不通"（撞名试到上限）：
+        // 只能合并或取消，绝不能把"改名"显示成一个可用的出口——
+        // 以前它会拿着撞名的路径继续解压，实际把条目倒进了已有目录。
+        val renameTo = plan.suggestedFolder?.substringAfterLast('/')
         AlertDialog(
             onDismissRequest = { folderConflictAsked = false },
             title = { Text("目标位置已有同名项目") },
             text = {
-                val renameTo = plan.suggestedFolder.substringAfterLast('/')
                 Text(
                     "合并进去：该文件夹里已有同名 ${plan.conflictCount} 处，" +
                         "会按上面「遇到同名文件」的选择处理。\n" +
-                        "改名为「$renameTo」：那是一个新建的空文件夹，解压不会产生任何同名冲突。",
+                        if (renameTo != null) "改名为「$renameTo」：那是一个新建的空文件夹，解压不会产生任何同名冲突。"
+                        else "没法自动改名：按「原名 (2)、(3)…」往后找，试了很多个还是撞名，" +
+                            "找不到可用的新名字。只能合并，或者换一个目标目录。",
                 )
             },
             confirmButton = {
@@ -406,12 +411,14 @@ fun ArchiveCard(
             },
             dismissButton = {
                 Row {
-                    TextButton(
-                        onClick = {
-                            folderConflictAsked = false
-                            onExtract(target, null, policy, false)
-                        },
-                    ) { Text("改名") }
+                    if (renameTo != null) {
+                        TextButton(
+                            onClick = {
+                                folderConflictAsked = false
+                                onExtract(target, null, policy, false)
+                            },
+                        ) { Text("改名") }
+                    }
                     TextButton(onClick = { folderConflictAsked = false }) { Text("取消") }
                 }
             },

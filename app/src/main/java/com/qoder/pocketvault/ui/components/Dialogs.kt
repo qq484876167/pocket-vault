@@ -36,7 +36,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.style.TextOverflow
+import com.qoder.pocketvault.ui.vm.PasswordAsk
 import com.qoder.pocketvault.core.formatBytes
 import com.qoder.pocketvault.data.ArchiveCompression
 import com.qoder.pocketvault.data.FolderRow
@@ -421,4 +428,70 @@ private fun Breadcrumb(current: String, onJump: (String) -> Unit) {
             )
         }
     }
+}
+
+/**
+ * 批量解压时**原地**要密码的输入框。
+ *
+ * 三条规矩沿用详情页那套（那几条是踩出来的，别再退回统一的"解压失败"）：
+ *  - "还没给密码"与"密码不对"是两句话，各说各的；
+ *  - 输错之后输入内容留着、光标留在框里，改一个字符就能再试；
+ *  - 留空当取消处理（这一包跳过），不当成"密码就是空串"。
+ *
+ * 密码只交给调用方，界面这边不落盘；[draft] 由上层持有，所以重新问一次不会把用户打的字清掉。
+ */
+@Composable
+fun ExtractPasswordDialog(
+    ask: PasswordAsk,
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSupply: (String) -> Unit,
+) {
+    val field = remember { FocusRequester() }
+    LaunchedEffect(ask.attempts) {
+        // 第一次弹出、以及输错之后都直接把焦点放在输入框
+        field.requestFocus()
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("这个包加了密码") },
+        text = {
+            Column {
+                Text(
+                    ask.fileName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    ask.statusLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (ask.isError) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = onDraftChange,
+                    label = { Text("压缩包密码") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { if (draft.isNotEmpty()) onSupply(draft) }),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(field),
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "密码只存在这一次的内存里，不写进任何文件；应用被系统回收后要重新问一次。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSupply(draft) }) { Text("解压") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("跳过这一个") } },
+    )
 }

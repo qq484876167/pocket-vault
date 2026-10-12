@@ -34,6 +34,8 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CompletableDeferred
+import com.qoder.pocketvault.data.ArchiveAccess
 
 enum class ViewMode { LIST, GRID }
 
@@ -99,8 +101,52 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
     }
 
     /**
-     * 解压一个或一批压缩包：每个包独立成功失败，一个坏了不影响其余，
-     * 最后汇总成一句提示。加密包需要密码时提示去详情页输密码（这里不弹密码框）。
+     * 批量解压时正在等的密码。null 表示没有包在等。
+     *
+     * 以前加密包只能回一句"请在详情页输密码"，用户得退出多选、点进详情、输密码、
+     * 再从详情页解压。现在解压循环原地挂起等这个回答：给了就继续解，取消就跳过这一包，
+     * 解错了就再问一次并保留输入内容。**密码只活在这次会话的内存里**，不写盘、不进 SavedState。
+     */
+    private val _awaitingPassword = MutableStateFlow<PasswordAsk?>(null)
+    val awaitingPassword: StateFlow<PasswordAsk?> = _awaitingPassword
+
+    private var passwordGate: CompletableDeferred<String?>? = null
+
+    /** 界面把用户输入送回这里；传 null（或留空）表示取消，这一包按"没给密码"跳过。 */
+    fun supplyExtractPassword(password: String?) {
+        val gate = passwordGate ?: return
+        passwordGate = null
+        _awaitingPassword.value = null
+        gate.complete(password?.ifBlank { null })
+    }
+
+    /** 挂起直到用户回答。取消 / 关页面都会走到 null，绝不把忙碌遮罩永久留在屏上。 */
+    private suspend fun askPassword(fileName: String, attempts: Int, wrong: Boolean): String? {
+        val gate = CompletableDeferred<String?>()
+        passwordGate = gate
+        _awaitingPassword.value = PasswordAsk(fileName, attempts, wrong)
+        return try {
+            gate.await()
+        } finally {
+            passwordGate = null
+            _awaitingPassword.value = null
+        }
+    }
+
+    /**
+     * 探一次包（[ArchiveEngine.access] 会真读 16 个字节来验密码）。
+     * 连探测本身都出错时归到 [ArchiveAccess.Broken]，不能让一个坏包把整批解压带崩。
+     */
+    private suspend fun probeAccess(file: java.io.File, password: String?): ArchiveAccess =
+        runCatching { graph.archives.access(file, password) }
+            .onFailure { it.rethrowIfCancelled() }
+            .getOrElse { ArchiveAccess.Broken(it.userMessage()) }
+
+    /**
+     * 解压一个或一批压缩包：每个包独立成功失败，一个坏了不影响其余，最后汇总成一句提示。
+     *
+     * 加密包在这里**原地**要密码（见 [awaitingPassword]）；先用 [ArchiveEngine.access] 探一遍
+     * 再动手，是为了不在"密码错"的情况下已经写出半包文件——那样重试会产生一堆 `(2)` 副本。
      */
     fun extractArchives(
         picked: List<VaultEntry>,
@@ -127,6 +173,39 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
                 failures += "${archive.name}（所在目录已经找不到）"
                 continue
             }
+            var usedPassword = password
+            var attempts = 0
+            var access = probeAccess(file, usedPassword)
+            var skipThis = false
+            while (access is ArchiveAccess.NeedsPassword || access is ArchiveAccess.WrongPassword) {
+                attempts++
+                val given = askPassword(
+                    fileName = archive.name,
+                    attempts = attempts,
+                    wrong = access is ArchiveAccess.WrongPassword,
+                )
+                if (given == null) {
+                    failures += "${archive.name}（没给密码，已跳过）"
+                    skipThis = true
+                    break
+                }
+                usedPassword = given
+                access = probeAccess(file, usedPassword)
+            }
+            if (skipThis) continue
+            when (access) {
+                is ArchiveAccess.Unsupported -> {
+                    failures += "${archive.name}（${access.reason}）"
+                    continue
+                }
+
+                is ArchiveAccess.Broken -> {
+                    failures += "${archive.name}（打不开：${access.reason}）"
+                    continue
+                }
+
+                else -> Unit
+            }
             val dest = if (target == ExtractTarget.SPECIFIC) {
                 VaultPaths.normalizeRelative(specific ?: parent)
             } else {
@@ -137,7 +216,7 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
                 graph.archives.extractToVault(
                     archive = file,
                     destDirRelativePath = dest,
-                    password = password,
+                    password = usedPassword,
                     onProgress = { _, _ -> },
                     folderName = folder,
                 )
@@ -165,7 +244,6 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
                 append("；${failures.size} 个没解完：")
                 append(failures.take(3).joinToString("、"))
                 if (failures.size > 3) append(" 等")
-                append("。加密包请在详情页输密码")
             }
         }
     }

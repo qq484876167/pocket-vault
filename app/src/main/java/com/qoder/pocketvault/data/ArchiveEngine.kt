@@ -55,8 +55,8 @@ data class ExtractPlan(
     val enoughSpace: Boolean,
     /** 「解压到同名新文件夹」时，目标位置上是否已有同名文件夹。 */
     val targetFolderExists: Boolean = false,
-    /** 已存在时改名后的落点（「原名 (2)」），供界面写清楚。 */
-    val suggestedFolder: String = "",
+    /** 已存在时改名后的落点（「原名 (2)」），供界面写清楚；null = 找不到可用的新名字，界面必须关掉"改名"这条路。 */
+    val suggestedFolder: String? = null,
 )
 
 /** 解压结果。计数分开给，界面才能说清"改名 N、覆盖 M、跳过 K"。 */
@@ -164,17 +164,24 @@ class ArchiveEngine(private val repo: VaultRepository) {
         clean.isNotEmpty() && repo.entryAt(clean) != null
     }
 
-    /** 在 dest 下找一个还不存在的文件夹名（「原名 (2)」式递增），用于"自动改名"。 */
-    suspend fun freeFolderPath(parentRelativePath: String, rawName: String): String =
+    /**
+     * 在 dest 下找一个还不存在的文件夹名（「原名 (2)」式递增），用于"自动改名"。
+     *
+     * 返回 null 表示**没找到可用名字**（试到 [MAX_RENAME_ATTEMPTS] 还是撞名）。
+     * 以前这里 `break` 之后把最后一个撞名的候选原样返回，调用方无从分辨，
+     * 于是"选自动改名"实际变成了"合并进那个已有目录"——用户的文件被倒进别人的文件夹，
+     * 界面上却仍然按改名计数，事后根本找不回是哪几份混在了一起。宁可不开工。
+     */
+    suspend fun freeFolderPath(parentRelativePath: String, rawName: String): String? =
         withContext(Dispatchers.IO) {
             val parent = VaultPaths.normalizeRelative(parentRelativePath)
             val base = VaultPaths.sanitizeName(rawName.substringBeforeLast('.', rawName))
             var candidate = joinRelative(parent, base)
             var index = 2
             while (repo.entryAt(candidate) != null) {
+                if (index > MAX_RENAME_ATTEMPTS) return@withContext null
                 candidate = joinRelative(parent, "$base ($index)")
                 index++
-                if (index > MAX_RENAME_ATTEMPTS) break
             }
             candidate
         }

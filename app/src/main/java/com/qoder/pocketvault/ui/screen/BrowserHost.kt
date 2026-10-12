@@ -51,6 +51,7 @@ import com.qoder.pocketvault.data.db.VaultEntry
 import com.qoder.pocketvault.ui.vm.ExtractTarget
 import com.qoder.pocketvault.ui.LocalSnackbar
 import com.qoder.pocketvault.ui.components.EntryList
+import com.qoder.pocketvault.ui.components.ExtractPasswordDialog
 import com.qoder.pocketvault.ui.components.FolderPickerSheet
 import com.qoder.pocketvault.ui.components.PickerBlock
 import com.qoder.pocketvault.ui.components.SelectionAction
@@ -299,6 +300,23 @@ fun BrowserHost(
         )
 
         SheetMode.NONE -> Unit
+    }
+
+    // 批量解压碰到加密包：原地要密码，而不是把用户支去详情页。
+    // 输入内容放在这一层持有，所以"密码不对、再问一次"时不会把用户打的字清掉。
+    val passwordAsk by vm.awaitingPassword.collectAsStateWithLifecycle()
+    var passwordDraft by remember { mutableStateOf("") }
+    LaunchedEffect(passwordAsk) {
+        if (passwordAsk == null) passwordDraft = ""
+    }
+    passwordAsk?.let { ask ->
+        ExtractPasswordDialog(
+            ask = ask,
+            draft = passwordDraft,
+            onDraftChange = { passwordDraft = it },
+            onDismiss = { vm.supplyExtractPassword(null) },
+            onSupply = { vm.supplyExtractPassword(it) },
+        )
     }
 
     if (showNewFolder) {

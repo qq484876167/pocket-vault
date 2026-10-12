@@ -282,7 +282,12 @@ class DetailViewModel(
                     ExtractTarget.NEW_FOLDER -> {
                         val preferred = joinRelative(parent, archiveStem(file.name))
                         val name = if (!mergeIntoExisting && graph.archives.folderExists(preferred)) {
-                            graph.archives.freeFolderPath(parent, archiveStem(file.name)).substringAfterLast('/')
+                            // 找不到空位就停手。以前 freeFolderPath 会把最后一个仍然撞名的候选返回，
+                            // 于是"改名"实际变成"合并进已有目录"，用户以为不会冲突、结果和别人的文件混在一起。
+                            graph.archives.freeFolderPath(parent, archiveStem(file.name))?.substringAfterLast('/')
+                                ?: throw IllegalStateException(
+                                    "同名项太多，找不到可用的新文件夹名；请选「合并」或换一个目标目录",
+                                )
                         } else {
                             archiveStem(file.name)
                         }
