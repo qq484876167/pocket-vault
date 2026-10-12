@@ -141,6 +141,18 @@ fun MediaViewerScreen(vm: ViewerViewModel) {
                         ViewerSubject.VIDEO -> VideoPagerViewer(
                             entries = entries,
                             index = index,
+                            vm = vm,
+                            audioOnly = false,
+                            onIndexChanged = vm::onIndexChanged,
+                            onTap = { chrome = !chrome },
+                            onOpenExternal = { vm.openWithExternal(context) },
+                        )
+
+                        ViewerSubject.AUDIO -> VideoPagerViewer(
+                            entries = entries,
+                            index = index,
+                            vm = vm,
+                            audioOnly = true,
                             onIndexChanged = vm::onIndexChanged,
                             onTap = { chrome = !chrome },
                             onOpenExternal = { vm.openWithExternal(context) },
@@ -172,6 +184,7 @@ fun MediaViewerScreen(vm: ViewerViewModel) {
                     label = when (subject) {
                         ViewerSubject.PDF -> "页"
                         ViewerSubject.VIDEO -> "个"
+                        ViewerSubject.AUDIO -> "条"
                         else -> "张"
                     },
                     onJump = { showJump = true },

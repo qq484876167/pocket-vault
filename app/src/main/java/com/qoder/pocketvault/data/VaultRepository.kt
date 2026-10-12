@@ -599,7 +599,8 @@ class VaultRepository(
      * 只有图片与视频给序列（PDF / 文档单独打开），且保证被点开的条目一定在里面。
      */
     suspend fun viewerSequence(entry: VaultEntry): List<VaultEntry> = withContext(Dispatchers.IO) {
-        if (entry.isFolder || (entry.kind != FileKind.IMAGE && entry.kind != FileKind.VIDEO)) {
+        val sequenceKinds = setOf(FileKind.IMAGE, FileKind.VIDEO, FileKind.AUDIO)
+        if (entry.isFolder || entry.kind !in sequenceKinds) {
             return@withContext listOf(entry)
         }
         val siblings = dao.siblingsOfKind(entry.parentId, entry.kind)
@@ -668,6 +669,10 @@ class VaultRepository(
 
     suspend fun mediaPosition(entryId: Long): MediaPosition? =
         withContext(Dispatchers.IO) { db.mediaPositionDao().byEntry(entryId) }
+
+    /** 「从头播」就是把这条记录抹掉，而不是写一个 0 进去让下次照样跳 0。 */
+    suspend fun clearMediaPosition(entryId: Long) =
+        withContext(Dispatchers.IO) { db.mediaPositionDao().clear(entryId) }
 
     suspend fun pdfBookmarks(entryId: Long): List<PdfBookmark> =
         withContext(Dispatchers.IO) { db.pdfBookmarkDao().forEntry(entryId) }

@@ -26,7 +26,7 @@ sealed interface ResolvedFile {
 /** 这个条目能否在应用内查看器打开（列表、网格、详情页点击的分流依据）。 */
 fun viewerSupports(entry: VaultEntry): Boolean = when {
     entry.isFolder -> false
-    entry.kind == FileKind.IMAGE || entry.kind == FileKind.VIDEO -> true
+    entry.kind == FileKind.IMAGE || entry.kind == FileKind.VIDEO || entry.kind == FileKind.AUDIO -> true
     entry.kind == FileKind.DOCUMENT || entry.kind == FileKind.OTHER -> {
         FileKind.extensionOf(entry.name) == "pdf" || TextBookLoader.isPlainText(entry.name)
     }

@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.qoder.pocketvault.AppGraph
 import com.qoder.pocketvault.core.FileKind
 import com.qoder.pocketvault.core.LastReading
+import com.qoder.pocketvault.data.db.MediaPosition
 import com.qoder.pocketvault.data.db.ReaderBookmark
 import com.qoder.pocketvault.data.db.VaultEntry
 import com.qoder.pocketvault.data.userMessage
@@ -26,7 +27,7 @@ import kotlinx.coroutines.withContext
 
 enum class ViewerMode { PAGER, STRIP }
 
-enum class ViewerSubject { IMAGE, VIDEO, PDF, TEXT, UNSUPPORTED }
+enum class ViewerSubject { IMAGE, VIDEO, AUDIO, PDF, TEXT, UNSUPPORTED }
 
 /** 查看器/阅读器的状态。图片与视频用序列，文本按章切分并记住位置。 */
 class ViewerViewModel(
@@ -114,9 +115,49 @@ class ViewerViewModel(
 
     val current: VaultEntry? get() = _entries.value.getOrNull(_index.value)
 
-    /** 视频没有“翻页 / 连续滚动”两种模式的概念。 */
+    /** 视频与音频没有“翻页 / 连续滚动”两种模式的概念。 */
     val canToggleMode: Boolean
-        get() = _subject.value != ViewerSubject.VIDEO
+        get() = _subject.value != ViewerSubject.VIDEO && _subject.value != ViewerSubject.AUDIO
+
+    // ------------------------------------------------------------ 播放位置与倍速
+
+    /** 倍速对视频和音频共用一档：换了文件也保持上次的选择。 */
+    private val _playbackRate = MutableStateFlow(graph.prefs.playbackRate)
+    val playbackRate: StateFlow<Float> = _playbackRate
+
+    fun setPlaybackRate(rate: Float) {
+        val coerced = rate.coerceIn(0.5f, 2f)
+        if (coerced == _playbackRate.value) return
+        _playbackRate.value = coerced
+        graph.prefs.playbackRate = coerced
+    }
+
+    /**
+     * 上次看到第几毫秒的原始记录。
+     * "要不要真的续上"（太短不值得跳、看到 95% 就当看完）由
+     * [com.qoder.pocketvault.core.PlaybackRules.shouldResume] 判，规则只有一处。
+     */
+    suspend fun savedMediaPosition(entryId: Long): MediaPosition? =
+        runCatching { repo.mediaPosition(entryId) }.getOrNull()
+
+    /**
+     * 记下播放进度。走进程级作用域而不是 viewModelScope：滑到下一条、退出页面这些时刻
+     * viewModelScope 可能已经在取消，而那正是最需要把进度存下来的时刻。
+     */
+    fun saveMediaPosition(entryId: Long, positionMs: Long, durationMs: Long) {
+        if (positionMs <= 0L || durationMs <= 0L) return
+        graph.ioScope.launch {
+            runCatching { repo.saveMediaPosition(entryId, positionMs, durationMs) }
+        }
+    }
+
+    /**
+     * 「从头播」：把这条记录抹掉。
+     * 写成 0 而不是删掉，会被下一次"刚准备好还没播就退出"的保存覆盖回来，语义也更绕。
+     */
+    fun clearMediaPosition(entryId: Long) {
+        graph.ioScope.launch { runCatching { repo.clearMediaPosition(entryId) } }
+    }
 
     private var persistJob: Job? = null
     private var searchJob: Job? = null
@@ -150,6 +191,7 @@ class ViewerViewModel(
             _subject.value = when {
                 entry.kind == FileKind.IMAGE -> ViewerSubject.IMAGE
                 entry.kind == FileKind.VIDEO -> ViewerSubject.VIDEO
+                entry.kind == FileKind.AUDIO -> ViewerSubject.AUDIO
                 isPdf -> ViewerSubject.PDF
                 isText -> ViewerSubject.TEXT
                 else -> ViewerSubject.UNSUPPORTED

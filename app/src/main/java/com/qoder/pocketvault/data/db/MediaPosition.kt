@@ -22,11 +22,7 @@ data class MediaPosition(
     val positionMillis: Long,
     val durationMillis: Long,
     val updatedAt: Long,
-) {
-    /** 看到 95% 以后就当看完了，下次从头播。 */
-    val basicallyFinished: Boolean
-        get() = durationMillis > 0 && positionMillis >= durationMillis * 95 / 100
-}
+)
 
 @Dao
 interface MediaPositionDao {

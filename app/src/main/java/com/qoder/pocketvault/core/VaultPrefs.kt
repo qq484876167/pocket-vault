@@ -41,6 +41,14 @@ class VaultPrefs(context: Context) {
         get() = sp.getInt(KEY_READING_MARGIN, 18).coerceIn(8, 40)
         set(value) = sp.edit { putInt(KEY_READING_MARGIN, value.coerceIn(8, 40)) }
 
+    /**
+     * 播放倍速，视频与音频共用一档（换了文件也保持上次的选择）。
+     * 夹在 0.5–2.0：系统 MediaPlayer 超出这个区间要么不生效要么音画明显失真。
+     */
+    var playbackRate: Float
+        get() = sp.getFloat(KEY_PLAYBACK_RATE, 1f).coerceIn(0.5f, 2f)
+        set(value) = sp.edit { putFloat(KEY_PLAYBACK_RATE, value.coerceIn(0.5f, 2f)) }
+
     /** 只读持久化树授权，用于“再次同步同一文件夹”的增量导入。 */
     var watchedTreeUri: String?
         get() = sp.getString(KEY_WATCHED_TREE, null)
@@ -95,6 +103,7 @@ class VaultPrefs(context: Context) {
         const val KEY_READING_THEME = "reading_theme"
         const val KEY_READING_MARGIN = "reading_margin"
         const val KEY_LAST_READING = "last_reading"
+        const val KEY_PLAYBACK_RATE = "playback_rate"
     }
 }
 
