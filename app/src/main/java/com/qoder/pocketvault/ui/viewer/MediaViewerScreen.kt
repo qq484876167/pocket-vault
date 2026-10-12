@@ -14,6 +14,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.GridOn
+import androidx.compose.material.icons.filled.InvertColors
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.ViewColumn
@@ -54,11 +58,15 @@ fun MediaViewerScreen(vm: ViewerViewModel) {
     val ready by vm.ready.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     val pdfPages by vm.pdfPageCount.collectAsStateWithLifecycle()
+    val pdfInvert by vm.nightInvert.collectAsStateWithLifecycle()
+    val pdfMarks by vm.pdfMarks.collectAsStateWithLifecycle()
     val navigator = LocalNavigator.current
     val context = LocalContext.current
 
     var chrome by remember { mutableStateOf(true) }
     var showJump by remember { mutableStateOf(false) }
+    var showThumbs by remember { mutableStateOf(false) }
+    var showMarks by remember { mutableStateOf(false) }
 
     val total = when (subject) {
         ViewerSubject.PDF -> pdfPages
@@ -89,9 +97,17 @@ fun MediaViewerScreen(vm: ViewerViewModel) {
                     canToggleMode = vm.canToggleMode,
                     stripMode = mode == ViewerMode.STRIP,
                     showRotate = subject == ViewerSubject.IMAGE || subject == ViewerSubject.PDF,
+                    showPdfTools = subject == ViewerSubject.PDF && pdfPages > 0,
+                    pdfInvert = pdfInvert,
+                    thumbsOpen = showThumbs,
+                    bookmarked = pdfMarks.any { it.pageIndex == index },
                     onBack = { navigator?.goBack() },
                     onToggleMode = vm::toggleMode,
                     onRotate = vm::rotate,
+                    onToggleInvert = vm::toggleNightInvert,
+                    onToggleThumbs = { showThumbs = !showThumbs },
+                    onAddBookmark = vm::addPdfBookmark,
+                    onOpenBookmarks = { showMarks = true },
                     onOpenExternal = { vm.openWithExternal(context) },
                 )
                 if (total > 1) {
@@ -158,16 +174,31 @@ fun MediaViewerScreen(vm: ViewerViewModel) {
                             onOpenExternal = { vm.openWithExternal(context) },
                         )
 
-                        ViewerSubject.PDF -> PdfViewer(
-                            index = index,
-                            pageCount = pdfPages,
-                            mode = mode,
-                            rotation = rotation,
-                            widthPx = widthPx,
-                            onIndexChanged = vm::onIndexChanged,
-                            onTap = { chrome = !chrome },
-                            render = { page, px -> vm.renderPdfPage(page, px) },
-                        )
+                        ViewerSubject.PDF -> {
+                            PdfViewer(
+                                index = index,
+                                pageCount = pdfPages,
+                                mode = mode,
+                                rotation = rotation,
+                                widthPx = widthPx,
+                                invert = pdfInvert,
+                                onIndexChanged = vm::onIndexChanged,
+                                onTap = { chrome = !chrome },
+                                render = { page, px -> vm.renderPdfPage(page, px) },
+                            )
+                            if (showThumbs) {
+                                PdfThumbGrid(
+                                    pageCount = pdfPages,
+                                    current = index,
+                                    render = { page, px -> vm.renderPdfPage(page, px) },
+                                    onPick = { page ->
+                                        vm.jumpToPdfPage(page)
+                                        showThumbs = false
+                                    },
+                                    onDismiss = { showThumbs = false },
+                                )
+                            }
+                        }
 
                         ViewerSubject.UNSUPPORTED -> UnsupportedViewer(
                             entry = entries.getOrNull(index),
@@ -193,9 +224,24 @@ fun MediaViewerScreen(vm: ViewerViewModel) {
         }
     }
 
+    if (showMarks && subject == ViewerSubject.PDF) {
+        PdfBookmarkSheet(
+            marks = pdfMarks,
+            pageCount = pdfPages,
+            onJump = vm::jumpToPdfPage,
+            onDelete = vm::removePdfBookmark,
+            onDismiss = { showMarks = false },
+        )
+    }
+
     if (showJump && total > 1) {
         JumpDialog(
             total = total,
+            unit = when (subject) {
+                ViewerSubject.PDF -> "页"
+                ViewerSubject.VIDEO, ViewerSubject.AUDIO -> "个"
+                else -> "项"
+            },
             onDismiss = { showJump = false },
             onConfirm = { target ->
                 showJump = false
@@ -211,9 +257,17 @@ private fun ViewerTopBar(
     canToggleMode: Boolean,
     stripMode: Boolean,
     showRotate: Boolean,
+    showPdfTools: Boolean,
+    pdfInvert: Boolean,
+    thumbsOpen: Boolean,
+    bookmarked: Boolean,
     onBack: () -> Unit,
     onToggleMode: () -> Unit,
     onRotate: () -> Unit,
+    onToggleInvert: () -> Unit,
+    onToggleThumbs: () -> Unit,
+    onAddBookmark: () -> Unit,
+    onOpenBookmarks: () -> Unit,
     onOpenExternal: () -> Unit,
 ) {
     Row(
@@ -263,6 +317,44 @@ private fun ViewerTopBar(
                     .padding(8.dp),
             )
         }
+        // PDF 专属：页面总览、给这一页加书签、书签列表、夜间反色
+        if (showPdfTools) {
+            Icon(
+                Icons.Filled.GridOn,
+                contentDescription = "页面总览",
+                tint = if (thumbsOpen) Color.White else Color.White.copy(alpha = 0.65f),
+                modifier = Modifier
+                    .size(40.dp)
+                    .clickable(onClick = onToggleThumbs)
+                    .padding(8.dp),
+            )
+            Icon(
+                imageVector = if (bookmarked) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                contentDescription = if (bookmarked) "这一页已加书签，点开看书签" else "给这一页加书签",
+                tint = Color.White,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clickable(onClick = onAddBookmark)
+                    .padding(8.dp),
+            )
+            Icon(
+                Icons.Filled.InvertColors,
+                contentDescription = "夜间反色",
+                tint = if (pdfInvert) Color.White else Color.White.copy(alpha = 0.65f),
+                modifier = Modifier
+                    .size(40.dp)
+                    .clickable(onClick = onToggleInvert)
+                    .padding(8.dp),
+            )
+            Text(
+                "书签",
+                color = Color.White.copy(alpha = 0.85f),
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier
+                    .clickable(onClick = onOpenBookmarks)
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+            )
+        }
         Icon(
             Icons.Filled.OpenInNew,
             contentDescription = "用其他应用打开",
@@ -303,11 +395,11 @@ private fun ViewerBottomBar(index: Int, total: Int, label: String, onJump: () ->
 }
 
 @Composable
-private fun JumpDialog(total: Int, onDismiss: () -> Unit, onConfirm: (Int) -> Unit) {
+private fun JumpDialog(total: Int, unit: String, onDismiss: () -> Unit, onConfirm: (Int) -> Unit) {
     var text by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("跳到第几${if (total > 0) "项" else "页"}") },
+        title = { Text("跳到第几$unit") },
         text = {
             Column {
                 OutlinedTextField(

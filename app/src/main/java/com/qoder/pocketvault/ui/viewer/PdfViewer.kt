@@ -50,6 +50,7 @@ fun PdfViewer(
     mode: ViewerMode,
     rotation: Int,
     widthPx: Int,
+    invert: Boolean,
     onIndexChanged: (Int) -> Unit,
     onTap: () -> Unit,
     render: suspend (Int, Int) -> Bitmap?,
@@ -98,6 +99,7 @@ fun PdfViewer(
                 zoom = zoom,
                 render = render,
                 onTap = onTap,
+                invert = invert,
                 fillViewport = true,
             )
         }
@@ -125,6 +127,7 @@ fun PdfViewer(
                     zoom = remember(page) { PinchZoomState() },
                     render = render,
                     onTap = onTap,
+                    invert = invert,
                     fillViewport = false,
                 )
                 Spacer(Modifier.height(10.dp))
@@ -141,6 +144,7 @@ private fun PdfPageImage(
     zoom: PinchZoomState,
     render: suspend (Int, Int) -> Bitmap?,
     onTap: () -> Unit,
+    invert: Boolean,
     fillViewport: Boolean,
 ) {
     var bitmap by remember(page) { mutableStateOf<Bitmap?>(null) }
@@ -191,6 +195,8 @@ private fun PdfPageImage(
                 contentDescription = "第 ${page + 1} 页",
                 contentScale = if (fillViewport) ContentScale.Fit else ContentScale.FillWidth,
                 alignment = Alignment.Center,
+                // 夜间反色只动显示层：不重新渲染、不多占一份位图缓存，开关即时生效
+                colorFilter = if (invert) PdfInvertFilter else null,
                 modifier = Modifier
                     .then(if (fillViewport) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
                     .zoomTransform(zoom, rotation)

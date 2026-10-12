@@ -8,6 +8,7 @@ import com.qoder.pocketvault.AppGraph
 import com.qoder.pocketvault.core.FileKind
 import com.qoder.pocketvault.core.LastReading
 import com.qoder.pocketvault.data.db.MediaPosition
+import com.qoder.pocketvault.data.db.PdfBookmark
 import com.qoder.pocketvault.data.db.ReaderBookmark
 import com.qoder.pocketvault.data.db.VaultEntry
 import com.qoder.pocketvault.data.userMessage
@@ -159,6 +160,52 @@ class ViewerViewModel(
         graph.ioScope.launch { runCatching { repo.clearMediaPosition(entryId) } }
     }
 
+    // ---------------------------------------------------------------- PDF 书签与夜间反色
+
+    private val _pdfMarks = MutableStateFlow<List<PdfBookmark>>(emptyList())
+    val pdfMarks: StateFlow<List<PdfBookmark>> = _pdfMarks
+
+    /** 夜间反色：只是显示层套一张反色矩阵，不重新渲染页面，所以开关是即时的。 */
+    private val _nightInvert = MutableStateFlow(graph.prefs.pdfInvert)
+    val nightInvert: StateFlow<Boolean> = _nightInvert
+
+    fun toggleNightInvert() {
+        val next = !_nightInvert.value
+        _nightInvert.value = next
+        graph.prefs.pdfInvert = next
+    }
+
+    private suspend fun loadPdfMarks(entryId: Long) {
+        _pdfMarks.value = runCatching { repo.pdfBookmarks(entryId) }
+            .onFailure { it.rethrowIfCancelled() }
+            .getOrDefault(emptyList())
+    }
+
+    /** 给当前这一页加书签。同一页重复点只算刷新标签，不会堆重复行。 */
+    fun addPdfBookmark() {
+        val page = _index.value
+        viewModelScope.launch {
+            val outcome = runCatching { repo.addPdfBookmark(entryId, page, "") }
+                .onFailure { it.rethrowIfCancelled() }
+            if (outcome.isFailure) _message.value = "书签没存上：${outcome.exceptionOrNull()?.userMessage()}"
+            else loadPdfMarks(entryId)
+        }
+    }
+
+    fun removePdfBookmark(page: Int) {
+        viewModelScope.launch {
+            val outcome = runCatching { repo.removePdfBookmark(entryId, page) }
+                .onFailure { it.rethrowIfCancelled() }
+            if (outcome.isFailure) _message.value = "书签没删掉：${outcome.exceptionOrNull()?.userMessage()}"
+            else loadPdfMarks(entryId)
+        }
+    }
+
+    /** 书签跳转：页码越界就夹一下，别让列表里残留的旧页码把界面弄乱。 */
+    fun jumpToPdfPage(page: Int) {
+        onIndexChanged(page.coerceIn(0, (_pdfPageCount.value - 1).coerceAtLeast(0)))
+    }
+
     private var persistJob: Job? = null
     private var searchJob: Job? = null
     private var chapterJob: Job? = null
@@ -239,6 +286,9 @@ class ViewerViewModel(
         val document = file?.let { runCatching { PdfDocument.open(it) }.getOrNull() }
         _pdf.value = document
         _pdfPageCount.value = document?.pageCount ?: 0
+        // 书签是"这份文件"的属性：打开时就该把这一份的书签读出来，
+        // 而不是等用户点开列表才发现是空的。
+        loadPdfMarks(entryId)
         if (document == null) _message.value = "这份 PDF 打不开，可能已损坏"
         _ready.value = true
     }

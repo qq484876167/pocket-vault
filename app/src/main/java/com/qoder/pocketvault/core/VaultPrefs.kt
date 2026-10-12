@@ -24,6 +24,14 @@ class VaultPrefs(context: Context) {
         get() = sp.getInt(KEY_TRASH_DAYS, 30).coerceIn(1, 365)
         set(value) = sp.edit { putInt(KEY_TRASH_DAYS, value.coerceIn(1, 365)) }
 
+    /**
+     * PDF 夜间反色。默认关：文字版 PDF 反色后不刺眼，
+     * 但照片 / 彩色插图为主的文件反着看很难看，所以不能自动打开。
+     */
+    var pdfInvert: Boolean
+        get() = sp.getBoolean(KEY_PDF_INVERT, false)
+        set(value) = sp.edit { putBoolean(KEY_PDF_INVERT, value) }
+
     /** 阅读排版偏好：字号、行距倍数、配色主题序号。 */
     var readingFontSize: Float
         get() = sp.getFloat(KEY_READING_FONT, 18f).coerceIn(13f, 32f)
@@ -104,6 +112,7 @@ class VaultPrefs(context: Context) {
         const val KEY_READING_MARGIN = "reading_margin"
         const val KEY_LAST_READING = "last_reading"
         const val KEY_PLAYBACK_RATE = "playback_rate"
+        const val KEY_PDF_INVERT = "pdf_invert"
     }
 }
 
