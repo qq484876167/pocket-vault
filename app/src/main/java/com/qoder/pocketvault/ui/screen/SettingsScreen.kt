@@ -26,6 +26,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.qoder.pocketvault.core.VaultRootMode
 import com.qoder.pocketvault.core.formatBytes
+import com.qoder.pocketvault.core.formatDuration
 import com.qoder.pocketvault.ui.LocalSnackbar
 import com.qoder.pocketvault.ui.components.VaultButton
 import com.qoder.pocketvault.ui.vm.SettingsViewModel
@@ -112,6 +113,49 @@ fun SettingsScreen(vm: SettingsViewModel) {
                     VaultButton("撤销", filled = false, modifier = Modifier.padding(start = 6.dp)) { vm.forgetTree(permission.uri) }
                 }
             }
+        }
+
+        Section("阅读统计") {
+            Text(
+                if (state.reading.totalSeconds <= 0 && state.readingRanks.isEmpty()) {
+                    "还没有读数。打开一本 txt 小说或 PDF 读起来，这里就会记下每本书读了多久。"
+                } else {
+                    "累计 ${formatDuration(state.reading.totalSeconds * 1000L)} · 读过 ${state.reading.readDays} 天"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            state.readingRanks.forEachIndexed { index, rank ->
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+                    Text(
+                        "${index + 1}. ${rank.label}",
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        formatDuration(rank.seconds * 1000L) +
+                            (if (rank.blocks > 0) " · 推进 ${rank.blocks} 处" else ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
+            }
+            if (state.reading.days.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                // 最近 7 天，从新到旧；日期是本地日切，跨零点自然落到下一天
+                Text(
+                    "最近：" + state.reading.days.take(7).joinToString("  ") {
+                        "${it.day.substringAfterLast('-').replace('-', '/')} ${formatDuration(it.seconds * 1000L)}"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Text(
+                "只算应用在前台、阅读页活着的时间；切走就不记。这些数据只存在本机，卸载即清空。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         Section("索引与缓存") {

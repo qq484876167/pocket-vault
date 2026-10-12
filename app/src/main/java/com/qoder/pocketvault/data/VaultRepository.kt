@@ -56,10 +56,17 @@ data class StorageReport(
  * 天数与总时长都由 SQL 聚合出来，界面不再自己拼。
  */
 data class ReadingSummary(
-    val totalSeconds: Int,
-    val readDays: Int,
-    val perBook: List<BookStat>,
-    val days: List<DayStat>,
+    val totalSeconds: Int = 0,
+    val readDays: Int = 0,
+    val perBook: List<BookStat> = emptyList(),
+    val days: List<DayStat> = emptyList(),
+)
+
+/** 排行里的一行：书名 + 累计时长 + 推进了多少处。 */
+data class ReadingRank(
+    val label: String,
+    val seconds: Int,
+    val blocks: Int,
 )
 
 /** 目录选择器里的一行：路径、显示名、直接子项数。 */
@@ -722,6 +729,22 @@ class VaultRepository(
             perBook = statDao.perBook(),
             days = statDao.recentDays(recentDays),
         )
+    }
+
+    /**
+     * 读书排行，带上书名。
+     * 条目可能已经被彻底删除（账是账、书是书）：那种行标成"（已移除）"而不是悄悄消失，
+     * 否则用户会觉得"统计对不上"。
+     */
+    suspend fun readingRanks(limit: Int = 8): List<ReadingRank> = withContext(Dispatchers.IO) {
+        db.readingStatDao().perBook().take(limit).map { stat ->
+            val entry = dao.byId(stat.entryId)
+            ReadingRank(
+                label = entry?.name ?: "（已移除）",
+                seconds = stat.seconds,
+                blocks = stat.blocks,
+            )
+        }
     }
 
     // ---------------------------------------------------------------- 辅助

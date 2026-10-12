@@ -99,6 +99,151 @@ class ViewerViewModel(
     private val _margin = MutableStateFlow(graph.prefs.readingMargin)
     val margin: StateFlow<Int> = _margin
 
+    // 排版细项：都是"看着舒服不一样"的偏好，全部持久化，改动即时生效、不重新解析文件。
+    private val _indent = MutableStateFlow(graph.prefs.readingIndent)
+    val indent: StateFlow<Int> = _indent
+
+    private val _paragraphGap = MutableStateFlow(graph.prefs.readingParagraphGap)
+    val paragraphGap: StateFlow<Float> = _paragraphGap
+
+    private val _fontFamily = MutableStateFlow(graph.prefs.readingFontFamily)
+    val fontFamily: StateFlow<Int> = _fontFamily
+
+    private val _fontWeight = MutableStateFlow(graph.prefs.readingFontWeight)
+    val fontWeight: StateFlow<Int> = _fontWeight
+
+    private val _justify = MutableStateFlow(graph.prefs.readingJustify)
+    val justify: StateFlow<Boolean> = _justify
+
+    private val _maxChars = MutableStateFlow(graph.prefs.readingMaxCharsPerLine)
+    val maxCharsPerLine: StateFlow<Int> = _maxChars
+
+    private val _pageAnim = MutableStateFlow(graph.prefs.readingPageAnim)
+    val pageAnim: StateFlow<Int> = _pageAnim
+
+    private val _volumePaging = MutableStateFlow(graph.prefs.readingVolumePaging)
+    val volumePaging: StateFlow<Boolean> = _volumePaging
+
+    private val _autoScroll = MutableStateFlow(graph.prefs.readingAutoScroll)
+    val autoScroll: StateFlow<Int> = _autoScroll
+
+    private val _progressMode = MutableStateFlow(graph.prefs.readingProgressMode)
+    val progressMode: StateFlow<Int> = _progressMode
+
+    fun setIndent(chars: Int) {
+        val coerced = chars.coerceIn(0, 4)
+        if (coerced == _indent.value) return
+        _indent.value = coerced
+        graph.prefs.readingIndent = coerced
+    }
+
+    fun setParagraphGap(factor: Float) {
+        val coerced = factor.coerceIn(0f, 1.5f)
+        if (coerced == _paragraphGap.value) return
+        _paragraphGap.value = coerced
+        graph.prefs.readingParagraphGap = coerced
+    }
+
+    fun setFontFamily(index: Int) {
+        val coerced = index.coerceIn(0, 2)
+        if (coerced == _fontFamily.value) return
+        _fontFamily.value = coerced
+        graph.prefs.readingFontFamily = coerced
+    }
+
+    fun setFontWeight(index: Int) {
+        val coerced = index.coerceIn(0, 3)
+        if (coerced == _fontWeight.value) return
+        _fontWeight.value = coerced
+        graph.prefs.readingFontWeight = coerced
+    }
+
+    fun setJustify(on: Boolean) {
+        _justify.value = on
+        graph.prefs.readingJustify = on
+    }
+
+    fun setMaxCharsPerLine(chars: Int) {
+        val coerced = chars.coerceIn(0, 60)
+        if (coerced == _maxChars.value) return
+        _maxChars.value = coerced
+        graph.prefs.readingMaxCharsPerLine = coerced
+    }
+
+    fun setPageAnim(mode: Int) {
+        val coerced = mode.coerceIn(0, 1)
+        if (coerced == _pageAnim.value) return
+        _pageAnim.value = coerced
+        graph.prefs.readingPageAnim = coerced
+    }
+
+    fun setVolumePaging(on: Boolean) {
+        _volumePaging.value = on
+        graph.prefs.readingVolumePaging = on
+    }
+
+    fun setAutoScroll(level: Int) {
+        val coerced = level.coerceIn(0, 5)
+        if (coerced == _autoScroll.value) return
+        _autoScroll.value = coerced
+        graph.prefs.readingAutoScroll = coerced
+    }
+
+    fun setProgressMode(mode: Int) {
+        val coerced = mode.coerceIn(0, 2)
+        if (coerced == _progressMode.value) return
+        _progressMode.value = coerced
+        graph.prefs.readingProgressMode = coerced
+    }
+
+    // ---------------------------------------------------------------- 阅读统计
+
+    /** 这一场读了多久（秒）。剩余时间按它来估，比拿"今天累计"估得更贴切。 */
+    private val _sessionSeconds = MutableStateFlow(0)
+    val sessionSeconds: StateFlow<Int> = _sessionSeconds
+
+    private var readingTimerJob: Job? = null
+    private var unbankedSeconds = 0
+    private var pendingBlocks = 0
+
+    /**
+     * 开始计时：只在阅读页真的活着的时候跑（界面 DisposableEffect 负责停）。
+     * 每 10 秒加一格，攒够 60 秒才写一次库——频繁小事务对 flash 没有意义。
+     */
+    fun startReadingTimer() {
+        if (readingTimerJob?.isActive == true) return
+        readingTimerJob = viewModelScope.launch {
+            while (isActive) {
+                delay(STAT_TICK_SECONDS * 10L)
+                _sessionSeconds.value += STAT_TICK_SECONDS
+                unbankedSeconds += STAT_TICK_SECONDS
+                if (unbankedSeconds >= 60) bankReadingTime()
+            }
+        }
+    }
+
+    fun stopReadingTimer() {
+        readingTimerJob?.cancel()
+        readingTimerJob = null
+        bankReadingTime()
+    }
+
+    private fun bankReadingTime() {
+        val seconds = unbankedSeconds
+        val blocks = pendingBlocks
+        if (seconds <= 0 && blocks <= 0) return
+        unbankedSeconds = 0
+        pendingBlocks = 0
+        graph.ioScope.launch {
+            runCatching { repo.addReadingTime(entryId, seconds, blocks) }
+        }
+    }
+
+    /** 读到哪一段了：顺便记下往前推进了多少段，统计里就是"今天读了多少处"。 */
+    private fun noteBlocksAdvanced(from: Int, to: Int) {
+        if (to > from) pendingBlocks += to - from
+    }
+
     private val _bookmarks = MutableStateFlow<List<ReaderBookmark>>(emptyList())
     val bookmarks: StateFlow<List<ReaderBookmark>> = _bookmarks
 
@@ -421,6 +566,7 @@ class ViewerViewModel(
     fun onParagraphRead(withinChapter: Int) {
         if (_resumeParagraph.value >= 0) return
         if (withinChapter == _paragraphIndex.value) return
+        noteBlocksAdvanced(_paragraphIndex.value, withinChapter)
         _paragraphIndex.value = withinChapter
         persistPosition()
     }
@@ -555,6 +701,7 @@ class ViewerViewModel(
     }
 
     override fun onCleared() {
+        stopReadingTimer()
         flushProgress()
         val document = _pdf.value
         _pdf.value = null
@@ -566,3 +713,6 @@ class ViewerViewModel(
 
 /** 落点占位的最长存活时间：UI 没来消费也得放行。 */
 private const val RESUME_GUARD_MS = 800L
+
+/** 阅读计时一格多少秒。 */
+private const val STAT_TICK_SECONDS = 10

@@ -50,6 +50,59 @@ class VaultPrefs(context: Context) {
         set(value) = sp.edit { putInt(KEY_READING_MARGIN, value.coerceIn(8, 40)) }
 
     /**
+     * 首行缩进几个全角字。默认 2 —— 中文小说的排版习惯就是这样，
+     * 之前一段贴一段齐头，看着像说明书。0 表示不缩进。
+     */
+    var readingIndent: Int
+        get() = sp.getInt(KEY_READING_INDENT, 2).coerceIn(0, 4)
+        set(value) = sp.edit { putInt(KEY_READING_INDENT, value.coerceIn(0, 4)) }
+
+    /** 段落之间再多出多少倍字号的空隙（0 就是原来的 0.40 倍）。 */
+    var readingParagraphGap: Float
+        get() = sp.getFloat(KEY_READING_PARAGRAPH_GAP, 0f).coerceIn(0f, 1.5f)
+        set(value) = sp.edit { putFloat(KEY_READING_PARAGRAPH_GAP, value.coerceIn(0f, 1.5f)) }
+
+    /** 0 系统默认（无衬线）/ 1 衬线 / 2 等宽。只用系统内置字体，不打包字体文件。 */
+    var readingFontFamily: Int
+        get() = sp.getInt(KEY_READING_FONT_FAMILY, 0).coerceIn(0, 2)
+        set(value) = sp.edit { putInt(KEY_READING_FONT_FAMILY, value.coerceIn(0, 2)) }
+
+    /** 0 常规 / 1 中等 / 2 半粗 / 3 粗。 */
+    var readingFontWeight: Int
+        get() = sp.getInt(KEY_READING_FONT_WEIGHT, 0).coerceIn(0, 3)
+        set(value) = sp.edit { putInt(KEY_READING_FONT_WEIGHT, value.coerceIn(0, 3)) }
+
+    /** 两端对齐。默认关：这是观感偏好，不该在升级后悄悄改掉用户已经习惯的样子。 */
+    var readingJustify: Boolean
+        get() = sp.getBoolean(KEY_READING_JUSTIFY, false)
+        set(value) = sp.edit { putBoolean(KEY_READING_JUSTIFY, value) }
+
+    /** 每行最多多少个字；0 = 不限（用满页宽）。平板 / 折叠屏上把一行拉太长会读得累。 */
+    var readingMaxCharsPerLine: Int
+        get() = sp.getInt(KEY_READING_MAX_CHARS, 0).coerceIn(0, 60)
+        set(value) = sp.edit { putInt(KEY_READING_MAX_CHARS, value.coerceIn(0, 60)) }
+
+    /** 0 翻屏直接落位（原有行为）/ 1 平滑滚动。 */
+    var readingPageAnim: Int
+        get() = sp.getInt(KEY_READING_PAGE_ANIM, 0).coerceIn(0, 1)
+        set(value) = sp.edit { putInt(KEY_READING_PAGE_ANIM, value.coerceIn(0, 1)) }
+
+    /** 音量键翻页。默认关：有人习惯按音量键调系统音量，不该被抢走。 */
+    var readingVolumePaging: Boolean
+        get() = sp.getBoolean(KEY_READING_VOLUME_PAGING, false)
+        set(value) = sp.edit { putBoolean(KEY_READING_VOLUME_PAGING, value) }
+
+    /** 自动滚屏档位，0 = 关。 */
+    var readingAutoScroll: Int
+        get() = sp.getInt(KEY_READING_AUTO_SCROLL, 0).coerceIn(0, 5)
+        set(value) = sp.edit { putInt(KEY_READING_AUTO_SCROLL, value.coerceIn(0, 5)) }
+
+    /** 底栏进度口径：0 不显示 / 1 百分比 / 2 剩余时间。 */
+    var readingProgressMode: Int
+        get() = sp.getInt(KEY_READING_PROGRESS_MODE, 1).coerceIn(0, 2)
+        set(value) = sp.edit { putInt(KEY_READING_PROGRESS_MODE, value.coerceIn(0, 2)) }
+
+    /**
      * 播放倍速，视频与音频共用一档（换了文件也保持上次的选择）。
      * 夹在 0.5–2.0：系统 MediaPlayer 超出这个区间要么不生效要么音画明显失真。
      */
@@ -110,6 +163,16 @@ class VaultPrefs(context: Context) {
         const val KEY_READING_LINE = "reading_line"
         const val KEY_READING_THEME = "reading_theme"
         const val KEY_READING_MARGIN = "reading_margin"
+        const val KEY_READING_INDENT = "reading_indent"
+        const val KEY_READING_PARAGRAPH_GAP = "reading_paragraph_gap"
+        const val KEY_READING_FONT_FAMILY = "reading_font_family"
+        const val KEY_READING_FONT_WEIGHT = "reading_font_weight"
+        const val KEY_READING_JUSTIFY = "reading_justify"
+        const val KEY_READING_MAX_CHARS = "reading_max_chars"
+        const val KEY_READING_PAGE_ANIM = "reading_page_anim"
+        const val KEY_READING_VOLUME_PAGING = "reading_volume_paging"
+        const val KEY_READING_AUTO_SCROLL = "reading_auto_scroll"
+        const val KEY_READING_PROGRESS_MODE = "reading_progress_mode"
         const val KEY_LAST_READING = "last_reading"
         const val KEY_PLAYBACK_RATE = "playback_rate"
         const val KEY_PDF_INVERT = "pdf_invert"

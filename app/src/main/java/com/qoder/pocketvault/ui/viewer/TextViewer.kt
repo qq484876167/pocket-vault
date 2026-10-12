@@ -6,10 +6,13 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,6 +23,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,17 +46,29 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.qoder.pocketvault.core.ReaderLayout
 import com.qoder.pocketvault.util.TextBook
 import com.qoder.pocketvault.util.TextEncoding
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -81,6 +97,17 @@ fun TextViewer(
     val fontSize by vm.fontSize.collectAsState()
     val lineSpacing by vm.lineSpacing.collectAsState()
     val marginDp by vm.margin.collectAsState()
+    val indent by vm.indent.collectAsState()
+    val paragraphGap by vm.paragraphGap.collectAsState()
+    val fontFamilyIndex by vm.fontFamily.collectAsState()
+    val fontWeightIndex by vm.fontWeight.collectAsState()
+    val justify by vm.justify.collectAsState()
+    val maxChars by vm.maxCharsPerLine.collectAsState()
+    val pageAnim by vm.pageAnim.collectAsState()
+    val volumePaging by vm.volumePaging.collectAsState()
+    val autoScrollLevel by vm.autoScroll.collectAsState()
+    val progressMode by vm.progressMode.collectAsState()
+    val sessionSeconds by vm.sessionSeconds.collectAsState()
     val marks by vm.bookmarks.collectAsState()
     val themeIndex by vm.themeIndex.collectAsState()
 
@@ -93,13 +120,55 @@ fun TextViewer(
     var bookPercent by remember(chapterIndex) { mutableIntStateOf(0) }
     val swipeThreshold = with(density) { 88.dp.toPx() }
 
-    // 阅读时保持常亮；离开时把当前位置补写进库，别指望那 250ms 的防抖来得及
+    val readerFocus = remember { FocusRequester() }
+
+    // 阅读时保持常亮并开始计时；离开时停表、把当前位置补写进库，别指望那 250ms 的防抖来得及
     DisposableEffect(Unit) {
         val window = (context as? Activity)?.window
         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        vm.startReadingTimer()
         onDispose {
             window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            vm.stopReadingTimer()
             vm.flushProgress()
+        }
+    }
+
+    // 音量键要先进 Compose 的按键分发，得有节点持有焦点才行；开了"音量键翻页"才去抢焦点，
+    // 不然按音量键应该是系统的音量条，不是这本书在翻页。
+    LaunchedEffect(volumePaging) {
+        if (volumePaging) runCatching { readerFocus.requestFocus() }
+    }
+
+    /** 可视区高度（像素）。翻屏与自动滚屏都按它换算。 */
+    fun viewportHeightPx(): Float {
+        val info = listState.layoutInfo
+        return (info.viewportEndOffset - info.viewportStartOffset).toFloat().coerceAtLeast(1f)
+    }
+
+    /**
+     * 正文可用的宽度（像素）：屏宽减去左右页边距。
+     * 屏宽在组合期取好（LocalConfiguration 只能在 @Composable 里读），函数本身只是换算。
+     */
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp.dp
+    fun viewportWidthPx(): Float {
+        val available = (screenWidthDp - (marginDp * 2).dp).coerceAtLeast(0.dp)
+        return with(density) { available.toPx() }
+    }
+
+    fun turnScreen(direction: Int) {
+        val distance = viewportHeightPx() * 0.88f * direction
+        scope.launch {
+            if (pageAnim == 1) listState.animateScrollBy(distance) else listState.scrollBy(distance)
+        }
+    }
+
+    // 自动滚屏：档位 0 就是完全停，不留"极慢地一直在滚"这种关不掉的错觉。
+    LaunchedEffect(autoScrollLevel) {
+        if (autoScrollLevel <= 0) return@LaunchedEffect
+        while (isActive) {
+            listState.scrollBy(ReaderLayout.autoScrollPxPerFrame(autoScrollLevel, viewportHeightPx()))
+            delay(AUTO_SCROLL_FRAME_MS)
         }
     }
 
@@ -189,27 +258,75 @@ fun TextViewer(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = marginDp.dp)
-                        .pointerInput(paragraphs.size) {
-                            detectTapGestures { offset ->
-                                val info = listState.layoutInfo
-                                val height = (info.viewportEndOffset - info.viewportStartOffset).toFloat().coerceAtLeast(1f)
-                                when {
-                                    offset.y > height * 0.62f -> scope.launch { listState.scrollBy(height * 0.88f) }
-                                    offset.y < height * 0.38f -> scope.launch { listState.scrollBy(-height * 0.88f) }
-                                    else -> onTap()
+                        .focusRequester(readerFocus)
+                        .focusable()
+                        .onPreviewKeyEvent { event ->
+                            // 音量下 = 往后翻一屏，音量上 = 往前翻一屏。没开这个选项就原样放行给系统。
+                            if (!volumePaging || event.type != KeyEventType.KeyDown) false
+                            else when {
+                                event.key == Key.VolumeDown -> {
+                                    turnScreen(1)
+                                    true
                                 }
+
+                                event.key == Key.VolumeUp -> {
+                                    turnScreen(-1)
+                                    true
+                                }
+
+                                else -> false
                             }
+                        }
+                        .pointerInput(paragraphs.size, pageAnim) {
+                            detectTapGestures(
+                                onTap = { offset ->
+                                    val height = viewportHeightPx()
+                                    when {
+                                        offset.y > height * 0.62f -> turnScreen(1)
+                                        offset.y < height * 0.38f -> turnScreen(-1)
+                                        else -> onTap()
+                                    }
+                                },
+                                // 双击 = 打开目录：翻书时"跳到哪一章"是最高频的跳转
+                                onDoubleTap = { sheet = ReaderSheet.TOC },
+                            )
                         },
                 ) {
                     items(count = paragraphs.size) { position ->
                         Text(
-                            text = paragraphs[position],
+                            // 首行缩进用全角空格：它就等于"一个汉字宽"，换字体也不会歪
+                            text = ReaderLayout.indentPrefix(indent) + paragraphs[position],
                             color = theme.text,
                             fontSize = fontSize.sp,
                             lineHeight = (fontSize * lineSpacing).sp,
+                            fontFamily = when (fontFamilyIndex) {
+                                1 -> FontFamily.Serif
+                                2 -> FontFamily.Monospace
+                                else -> FontFamily.SansSerif
+                            },
+                            fontWeight = when (fontWeightIndex) {
+                                1 -> FontWeight.Medium
+                                2 -> FontWeight.SemiBold
+                                3 -> FontWeight.Bold
+                                else -> FontWeight.Normal
+                            },
+                            textAlign = if (justify) TextAlign.Justify else TextAlign.Start,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(bottom = (fontSize * 0.40f).dp),
+                                // 每行字数上限：平板 / 折叠屏上一行拉到五六十个字会读得累
+                                .then(
+                                    if (maxChars <= 0) Modifier
+                                    else Modifier.widthIn(
+                                        max = with(density) {
+                                            ReaderLayout.maxContentWidthPx(
+                                                viewportWidthPx = viewportWidthPx(),
+                                                maxCharsPerLine = maxChars,
+                                                fontSizePx = with(density) { fontSize.sp.toPx() },
+                                            ).dp
+                                        },
+                                    ),
+                                )
+                                .padding(bottom = ReaderLayout.paragraphGapDp(fontSize, paragraphGap).dp),
                         )
                     }
                     item {
@@ -235,6 +352,8 @@ fun TextViewer(
                 paragraphIndex = paragraphIndex,
                 paragraphCount = paragraphs.size,
                 bookPercent = bookPercent,
+                progressMode = progressMode,
+                remainingMinutes = ReaderLayout.remainingMinutes(sessionSeconds, bookPercent),
                 theme = theme,
                 onPrev = { vm.stepChapter(-1) },
                 onNext = { vm.stepChapter(1) },
@@ -324,6 +443,8 @@ private fun ReaderFooter(
     paragraphIndex: Int,
     paragraphCount: Int,
     bookPercent: Int,
+    progressMode: Int,
+    remainingMinutes: Int?,
     theme: ReaderTheme,
     onPrev: () -> Unit,
     onNext: () -> Unit,
@@ -344,7 +465,11 @@ private fun ReaderFooter(
                 .padding(end = 12.dp),
         )
         Text(
-            "第 ${chapterIndex + 1}/$chapterCount 章 · 第 ${paragraphIndex + 1}/${paragraphCount} 段 · 全书 $bookPercent%",
+            buildString {
+                append("第 ${chapterIndex + 1}/$chapterCount 章 · 第 ${paragraphIndex + 1}/${paragraphCount} 段")
+                val label = ReaderLayout.progressLabel(progressMode, bookPercent, remainingMinutes)
+                if (label.isNotEmpty()) append(" · ").append(label)
+            },
             color = theme.muted,
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
@@ -466,11 +591,43 @@ private fun StyleSheet(vm: ViewerViewModel, book: TextBook?, theme: ReaderTheme,
     val lineSpacing by vm.lineSpacing.collectAsState()
     val marginDp by vm.margin.collectAsState()
     val themeIndex by vm.themeIndex.collectAsState()
+    val indent by vm.indent.collectAsState()
+    val paragraphGap by vm.paragraphGap.collectAsState()
+    val fontFamilyIndex by vm.fontFamily.collectAsState()
+    val fontWeightIndex by vm.fontWeight.collectAsState()
+    val justify by vm.justify.collectAsState()
+    val maxChars by vm.maxCharsPerLine.collectAsState()
+    val pageAnim by vm.pageAnim.collectAsState()
+    val volumePaging by vm.volumePaging.collectAsState()
+    val autoScrollLevel by vm.autoScroll.collectAsState()
+    val progressMode by vm.progressMode.collectAsState()
 
     ReaderSheet("排版与编码", theme, onDismiss) {
         LabeledSlider("字号 ${fontSize.toInt()} sp", 13f..32f, fontSize, theme, vm::setFontSize)
         LabeledSlider("行距 ${"%.2f".format(lineSpacing)}", 1.3f..2.4f, lineSpacing, theme, vm::setLineSpacing)
+        LabeledSlider("段间距 +${"%.2f".format(paragraphGap)} 倍字号", 0f..1.5f, paragraphGap, theme, vm::setParagraphGap)
         LabeledSlider("页边距 ${marginDp} dp", 8f..40f, marginDp.toFloat(), theme) { vm.setMargin(it.toInt()) }
+
+        Spacer(Modifier.height(8.dp))
+        ChoiceRow(
+            "每行字数 ${if (maxChars == 0) "不限" else "$maxChars"}",
+            listOf("不限", "24", "30", "36", "42"),
+            MAX_CHARS.indexOf(maxChars).coerceAtLeast(0),
+            theme,
+        ) { vm.setMaxCharsPerLine(MAX_CHARS[it]) }
+        ChoiceRow("首行缩进", listOf("不缩", "1 字", "2 字", "3 字", "4 字"), indent, theme, vm::setIndent)
+        ChoiceRow("字体", listOf("系统", "衬线", "等宽"), fontFamilyIndex, theme, vm::setFontFamily)
+        ChoiceRow("字重", listOf("常规", "中等", "半粗", "粗"), fontWeightIndex, theme, vm::setFontWeight)
+        ChoiceRow("对齐", listOf("左齐", "两端"), if (justify) 1 else 0, theme) { vm.setJustify(it == 1) }
+        ChoiceRow("翻页动画", listOf("直接落位", "平滑滚动"), pageAnim, theme, vm::setPageAnim)
+        ChoiceRow("音量键翻页", listOf("关", "开"), if (volumePaging) 1 else 0, theme) { vm.setVolumePaging(it == 1) }
+        ChoiceRow("自动滚屏", listOf("关", "很慢", "慢", "中", "快", "很快"), autoScrollLevel, theme, vm::setAutoScroll)
+        ChoiceRow("进度显示", listOf("不显示", "百分比", "剩余时间"), progressMode, theme, vm::setProgressMode)
+        Text(
+            "音量键翻页打开后，音量键就归这本书用了（阅读页内）；自动滚屏随时点一下屏幕可停。",
+            color = theme.muted,
+            style = MaterialTheme.typography.bodySmall,
+        )
 
         Spacer(Modifier.height(8.dp))
         Text("配色", color = theme.muted, style = MaterialTheme.typography.bodySmall)
@@ -535,6 +692,40 @@ private fun LabeledSlider(
     }
 }
 
+/** "每行字数"可选的几档；0 表示不限（用满页宽）。 */
+private val MAX_CHARS = listOf(0, 24, 30, 36, 42)
+
+/** 一排互斥选项。排版偏好全是"选一个"的形态，用滑块反而看不出档位。 */
+@Composable
+private fun ChoiceRow(
+    label: String,
+    options: List<String>,
+    selected: Int,
+    theme: ReaderTheme,
+    onPick: (Int) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+        Text(label, color = theme.muted, style = MaterialTheme.typography.bodySmall)
+        Row(modifier = Modifier.fillMaxWidth().padding(top = 3.dp)) {
+            options.forEachIndexed { index, text ->
+                Text(
+                    text,
+                    color = if (index == selected) theme.background else theme.text,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .padding(end = 6.dp)
+                        .background(
+                            if (index == selected) theme.accent else theme.bar,
+                            RoundedCornerShape(6.dp),
+                        )
+                        .clickable { onPick(index) }
+                        .padding(horizontal = 9.dp, vertical = 5.dp),
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun SearchSheet(
     vm: ViewerViewModel,
@@ -582,3 +773,6 @@ private fun SearchSheet(
 
 /** 滚动回报的最小间隔：甩动时不把 prefs 镜像、协程与重组按段落逐个触发。 */
 private const val SAMPLE_MS = 150L
+
+/** 自动滚屏一帧多少毫秒。 */
+private const val AUTO_SCROLL_FRAME_MS = 16L

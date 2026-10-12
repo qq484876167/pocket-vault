@@ -6,6 +6,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.qoder.pocketvault.AppGraph
 import com.qoder.pocketvault.core.VaultRootMode
+import com.qoder.pocketvault.data.ReadingRank
+import com.qoder.pocketvault.data.ReadingSummary
 import com.qoder.pocketvault.data.VerifyReport
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +27,9 @@ data class SettingsState(
     val retentionDays: Int = 30,
     val trees: List<UriPermission> = emptyList(),
     val thumbCacheBytes: Long = 0L,
+    /** 阅读统计：累计时长、读过几天、最近若干天。 */
+    val reading: ReadingSummary = ReadingSummary(0, 0, emptyList(), emptyList()),
+    val readingRanks: List<ReadingRank> = emptyList(),
     val message: String? = null,
 )
 
@@ -51,6 +56,8 @@ class SettingsViewModel(private val graph: AppGraph) : ViewModel() {
                     thumbCacheBytes = if (thumbDir.isDirectory) {
                         thumbDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
                     } else 0L,
+                    reading = runCatching { graph.repo.readingSummary() }.getOrDefault(ReadingSummary()),
+                    readingRanks = runCatching { graph.repo.readingRanks() }.getOrDefault(emptyList()),
                 )
             }
             // 逐字段 copy：整体重建 SettingsState 会把刚写进去的 message 抹掉，
@@ -66,6 +73,8 @@ class SettingsViewModel(private val graph: AppGraph) : ViewModel() {
                 retentionDays = snapshot.retentionDays,
                 trees = snapshot.trees,
                 thumbCacheBytes = snapshot.thumbCacheBytes,
+                reading = snapshot.reading,
+                readingRanks = snapshot.readingRanks,
             )
         }
     }
@@ -81,6 +90,8 @@ class SettingsViewModel(private val graph: AppGraph) : ViewModel() {
         val retentionDays: Int,
         val trees: List<UriPermission>,
         val thumbCacheBytes: Long,
+        val reading: ReadingSummary,
+        val readingRanks: List<ReadingRank>,
     )
 
     fun switchRoot(mode: VaultRootMode) {
