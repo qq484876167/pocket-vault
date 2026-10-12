@@ -13,8 +13,8 @@ android {
         applicationId = "com.qoder.pocketvault"
         minSdk = 29
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.12.1"
+        versionCode = 16
+        versionName = "1.13.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
