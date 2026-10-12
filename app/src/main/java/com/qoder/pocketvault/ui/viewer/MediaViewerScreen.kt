@@ -31,6 +31,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -84,6 +85,15 @@ fun MediaViewerScreen(vm: ViewerViewModel) {
         }
     }
 
+    // 阅读计时：txt 阅读器自己起停（在 TextViewer 里），这里补上 PDF，
+    // 否则设置页写着"打开一本 txt 小说或 PDF 读起来就会记"，实际只有 txt 会被记。
+    DisposableEffect(subject) {
+        if (subject == ViewerSubject.PDF && pdfPages > 0) vm.startReadingTimer()
+        onDispose {
+            if (subject == ViewerSubject.PDF) vm.stopReadingTimer()
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -93,7 +103,7 @@ fun MediaViewerScreen(vm: ViewerViewModel) {
             // 阅读器自带顶栏（含返回），这里就不再叠一条
             if (chrome && subject != ViewerSubject.TEXT) {
                 ViewerTopBar(
-                    title = entries.getOrNull(index)?.name ?: "查看",
+                    title = vm.current?.name ?: "查看",
                     canToggleMode = vm.canToggleMode,
                     stripMode = mode == ViewerMode.STRIP,
                     showRotate = subject == ViewerSubject.IMAGE || subject == ViewerSubject.PDF,
@@ -201,7 +211,7 @@ fun MediaViewerScreen(vm: ViewerViewModel) {
                         }
 
                         ViewerSubject.UNSUPPORTED -> UnsupportedViewer(
-                            entry = entries.getOrNull(index),
+                            entry = vm.current,
                             onOpenExternal = { vm.openWithExternal(context) },
                         )
                     }

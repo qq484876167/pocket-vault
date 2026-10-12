@@ -95,6 +95,39 @@ object MovePlanner {
         return Plan(moveNow, carried, alreadyThere, illegal)
     }
 
+    /** 选择器里一条禁用记录：[canEnter] 区分"能穿过去选子目录"与"连进都不给"。 */
+    data class PickerBlock(val path: String, val reason: String, val canEnter: Boolean)
+
+    /**
+     * 目录选择器的完整禁用表（纯函数）：
+     *  - [sources] 里那些文件夹自己 + 它们的后代 → 深灰，不能进也不能选；
+     *  - [ownDirs]（选中项真正所在的目录）→ 浅灰，能进、只是不能就地确认。
+     *
+     * **两边的合并顺序是修过的 bug**：以前是 `forbidden + ownDirs`，于是"选中了文件夹 A
+     * 又选中 A 里的某个文件"时，A 既是硬禁层（它自己要被移动）又是 ownDirs（它是那个文件的父目录），
+     * 右值胜出 → A 变成可以进去 → 在选择器里建个子文件夹点确认，最后被 MovePlanner 整批拒绝，
+     * 什么也没动、还多出一个空文件夹。这里让硬禁优先。
+     */
+    fun pickerBlocks(
+        sources: List<String>,
+        allFolderPaths: List<String>,
+        ownDirs: List<String>,
+    ): List<PickerBlock> {
+        val out = LinkedHashMap<String, PickerBlock>()
+        ownDirs.map { it.trim('/') }.distinct().forEach { path ->
+            out[path] = PickerBlock(path, "内容已经在这个目录里", canEnter = true)
+        }
+        // 顺序有讲究：硬禁层最后写入，覆盖掉同一层的"能穿过去"。
+        subtreeOf(sources, allFolderPaths).forEach { rule ->
+            out[rule.path] = PickerBlock(
+                rule.path,
+                if (rule.isSourceItself) "这正是要移动的文件夹" else "它在要移动的文件夹里面",
+                canEnter = false,
+            )
+        }
+        return out.values.toList()
+    }
+
     /** 目录选择器里的一条禁用记录：[isSourceItself] 区分"就是要移动的那个文件夹"和"它肚子里的子目录"。 */
     data class PickerRule(val path: String, val isSourceItself: Boolean)
 

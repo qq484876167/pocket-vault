@@ -141,6 +141,20 @@ class DetailViewModel(
         }
     }
 
+    /**
+     * 「解压到指定目录」的落点解析。
+     *
+     *  - `null` = 还没选（计划阶段先用压缩包所在目录兜着，界面上写着"还没选目标目录"）；
+     *  - `""` = 用户明确选了**文件库根目录**，必须按根目录算。
+     *
+     * 以前这里是 `normalizeRelative(specificFolder ?: parent).ifEmpty { parent }`：
+     * 根目录被换成压缩包自己所在的目录，而界面还显示着「已选：文件库根目录」——
+     * 不只落点错，连"落点里已有同名 N 处"和空间核对都是按错的目录算的。
+     * 多选解压那条入口（BrowseViewModel）本来就按 "" = 根目录处理，两个入口此前口径不一致。
+     */
+    private fun specificDest(specificFolder: String?, parent: String): String =
+        if (specificFolder == null) parent else VaultPaths.normalizeRelative(specificFolder)
+
     fun physicalFile(): File? = _entry.value?.let { runCatching { repo.physicalFile(it) }.getOrNull() }
 
     /**
@@ -237,7 +251,7 @@ class DetailViewModel(
         }
         val dest = when (target) {
             ExtractTarget.CURRENT_FOLDER, ExtractTarget.NEW_FOLDER -> parent
-            ExtractTarget.SPECIFIC -> VaultPaths.normalizeRelative(specificFolder ?: parent).ifEmpty { parent }
+            ExtractTarget.SPECIFIC -> specificDest(specificFolder, parent)
         }
         // 与 extract() 的落点保持一致：同名新文件夹（无论新建还是合并）都落进 stem 里，
         // 选「自动改名」时落点是空目录，冲突数天然是 0，界面用 suggestedFolder 说明。
@@ -297,7 +311,7 @@ class DetailViewModel(
                     ExtractTarget.CURRENT_FOLDER -> parent to null
 
                     ExtractTarget.SPECIFIC ->
-                        VaultPaths.normalizeRelative(specificFolder ?: parent).ifEmpty { parent } to null
+                        specificDest(specificFolder, parent) to null
                 }
             }.onFailure { it.rethrowIfCancelled() }
             decision.fold(

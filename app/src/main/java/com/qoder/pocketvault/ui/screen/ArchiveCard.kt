@@ -96,8 +96,19 @@ fun ArchiveCard(
     var folderConflictAsked by remember { mutableStateOf(false) }
     var browsing by remember { mutableStateOf(false) }
     var pickedSpecific by remember { mutableStateOf(false) }
-    val passwordField = remember { FocusRequester() }
+    /**
+     * 传给计划/解压的目标目录。
+     * **选了"文件库根目录"时它是空串，那是一次真实的选择**，不能像以前那样
+     * `specific.ifBlank { null }` 折叠成"还没选"——那样根目录会被换成压缩包所在的目录。
+     */
+    val chosenSpecific: String? = if (target == ExtractTarget.SPECIFIC && pickedSpecific) specific else null
 
+    /**
+     * 选了「指定文件夹」却还没挑过目录：解压按钮不能放行。
+     * 以前这种会悄悄退回"压缩包所在的目录"去解，界面上却还写着"还没选目标目录"。
+     */
+    val noTarget = target == ExtractTarget.SPECIFIC && !pickedSpecific
+    val passwordField = remember { FocusRequester() }
     val plan = state.plan
     // 五种结论各自渲染：不接的格式、坏掉的包、要密码、密码不对、能读
     val blockedReason = state.blockedReason
@@ -164,7 +175,10 @@ fun ArchiveCard(
             ) {
                 FilterChip("同名新文件夹（推荐）", target == ExtractTarget.NEW_FOLDER) {
                     target = ExtractTarget.NEW_FOLDER
-                    plan?.let { if (it.suggestedFolder != null) onPlan(target, null) }
+                    // 换目标就要重新核对一次。以前只在"有改名建议"时才重算，
+                    // 而 suggestedFolder 现在可能是 null（找不到空位），于是界面留着上一个目标的
+                    // 条目数 / 冲突数 / 空间判断，看着像算了其实是旧账。
+                    plan?.let { onPlan(target, null) }
                 }
                 FilterChip("当前文件夹（$targetLabel）", target == ExtractTarget.CURRENT_FOLDER) {
                     target = ExtractTarget.CURRENT_FOLDER
@@ -216,12 +230,12 @@ fun ArchiveCard(
 
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                val blocked = askPassword || plan?.let { !it.enoughSpace } == true
+                val blocked = askPassword || noTarget || plan?.let { !it.enoughSpace } == true
                 VaultButton(
                     "解压",
                     enabled = !blocked,
                 ) {
-                    val dest = if (target == ExtractTarget.SPECIFIC) specific.ifBlank { null } else null
+                    val dest = chosenSpecific
                     if (target == ExtractTarget.NEW_FOLDER && plan?.targetFolderExists == true && !folderConflictAsked) {
                         folderConflictAsked = true
                     } else {
@@ -230,12 +244,15 @@ fun ArchiveCard(
                 }
                 if (plan == null) {
                     VaultButton("先核对大小与冲突", filled = false) {
-                        onPlan(target, if (target == ExtractTarget.SPECIFIC) specific.ifBlank { null } else null)
+                        onPlan(target, chosenSpecific)
                     }
                 }
             }
             if (plan != null && !plan.enoughSpace) {
                 Text("空间不够，先清一清或换个位置。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            if (noTarget) {
+                Text("还没选目标目录：点「浏览…」挑一个（根目录也算选好了）。", style = MaterialTheme.typography.bodySmall)
             }
         }
 
@@ -405,7 +422,7 @@ fun ArchiveCard(
                 TextButton(
                     onClick = {
                         folderConflictAsked = false
-                        onExtract(target, if (target == ExtractTarget.SPECIFIC) specific.ifBlank { null } else null, policy, true)
+                    onExtract(target, chosenSpecific, policy, true)
                     },
                 ) { Text("合并") }
             },
@@ -434,7 +451,7 @@ fun ArchiveCard(
                 browsing = false
                 specific = path
                 pickedSpecific = true
-                onPlan(ExtractTarget.SPECIFIC, path.ifBlank { null })
+                onPlan(ExtractTarget.SPECIFIC, path)
             },
         )
     }

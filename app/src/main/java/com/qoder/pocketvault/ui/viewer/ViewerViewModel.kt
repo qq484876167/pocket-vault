@@ -259,7 +259,18 @@ class ViewerViewModel(
 
     val theme: ReaderTheme get() = ReaderTheme.values().getOrElse(_themeIndex.value) { ReaderTheme.PARCHMENT }
 
-    val current: VaultEntry? get() = _entries.value.getOrNull(_index.value)
+    /**
+     * 当前打开的**文件**。
+     *
+     * PDF 的 `_index` 是页码而不是文件序号（序列里就只有这一个文件），
+     * 所以这里必须按类型取：不这样的话，翻到第 5 页以后标题会变成"查看"、
+     * 「用其他应用打开」会静默失灵——因为 `_entries.getOrNull(5)` 是 null。
+     */
+    val current: VaultEntry?
+        get() = when (_subject.value) {
+            ViewerSubject.PDF, ViewerSubject.TEXT -> _entries.value.firstOrNull()
+            else -> _entries.value.getOrNull(_index.value)
+        }
 
     /** 视频与音频没有“翻页 / 连续滚动”两种模式的概念。 */
     val canToggleMode: Boolean
@@ -276,6 +287,17 @@ class ViewerViewModel(
         if (coerced == _playbackRate.value) return
         _playbackRate.value = coerced
         graph.prefs.playbackRate = coerced
+    }
+
+    /**
+     * 这台机器的解码器拒绝了变速时走这里：**只改界面上的这一档，不写偏好**。
+     *
+     * 以前失败会把 1f 永久存进 prefs——一次瞬时异常（切后台、解码器正在复位时改速）
+     * 就把用户设好的倍速抹掉，还让他误以为"我的手机不支持变速"。
+     */
+    fun fallBackToNormalRate() {
+        if (_playbackRate.value == 1f) return
+        _playbackRate.value = 1f
     }
 
     /**
@@ -402,8 +424,22 @@ class ViewerViewModel(
 
     // ---------------------------------------------------------------- 通用
 
+    /**
+     * `_index` 能取到的上界。
+     *
+     * **PDF 的 index 是页码，不是文件序号**——图片 / 视频 / 音频的序列长度对 PDF 毫无意义
+     * （`viewerSequence` 对 DOCUMENT 只回它自己一个）。以前这里直接拿 `_entries.indices` 卡，
+     * 于是打开一个多页 PDF：翻到第 57 页时 `_index` 被拒绝更新、永远停在 0，
+     * 底栏的页码与进度条冻在 1/N，「跳到第 200 页」点了没反应，
+     * 书签全部记成"第 1 页"（主键是 entryId + 页码，所以第二条还把第一条顶掉了）。
+     */
+    private fun slotCount(): Int =
+        if (_subject.value == ViewerSubject.PDF) _pdfPageCount.value else _entries.value.size
+
     fun onIndexChanged(target: Int) {
-        if (target in _entries.value.indices && target != _index.value) _index.value = target
+        val limit = slotCount()
+        if (limit <= 0) return
+        if (target in 0 until limit && target != _index.value) _index.value = target
     }
 
     fun toggleMode() {

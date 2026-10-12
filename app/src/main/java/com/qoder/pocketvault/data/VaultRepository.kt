@@ -382,25 +382,60 @@ class VaultRepository(
             )
             plan.illegal.firstOrNull()?.let { throw IllegalStateException(it) }
 
-            // 校验通过之后才允许建目录：非法目标不该在库里留下一个空文件夹。
-            val destParentId = ensureFolderPath(destRel)
-            val occupied = dao.children(destParentId).map { joinRelative(destRel, it.name) }.toHashSet()
-            var done = 0
+            // 预检：所有实体文件都还在，才允许动第一块砖。
+            // 真正的坑是"搬成一半才失败"——事务只能回滚索引，renameTo 搬走的文件回不去，
+            // 于是索引说它还在原位（点开显示文件不存在）、新位置那份成了库里管不到的游离数据。
+            val targets = ArrayList<VaultEntry>()
+            val missing = ArrayList<String>()
             for (node in plan.moveNow) {
                 val entry = dao.byId(node.id) ?: continue
                 if (entry.state != EntryState.ACTIVE) continue
-                if (entry.parentId == destParentId) continue    // 前面某一项把它一起带过来了
-                val rel = dedupeRelative(destRel, entry.name, occupied)
-                val newName = rel.substringAfterLast('/')
-                val source = physicalFile(entry)
-                val dest = paths.fileOf(rel)
-                if (!source.exists()) throw IllegalStateException("找不到要移动的文件：${entry.name}")
-                dest.parentFile?.mkdirs()
-                if (!source.renameTo(dest)) throw IllegalStateException("移动失败：${entry.name}")
-                dao.update(entry.copy(parentId = destParentId, relativePath = rel, name = newName))
-                rebuildPaths(entry.id, rel)
-                occupied.add(rel)
-                done++
+                if (destId != null && entry.parentId == destId) continue   // 已经在目标目录里
+                if (!physicalFile(entry).exists()) missing += entry.name
+                if (missing.isEmpty()) targets += entry
+            }
+            if (missing.isNotEmpty()) {
+                throw IllegalStateException("实体文件已经不在了：${missing.joinToString("、")}")
+            }
+
+            // 校验通过之后才允许建目录：非法目标不该在库里留下一个空文件夹。
+            val destParentId = ensureFolderPath(destRel)
+            val occupied = dao.children(destParentId).map { joinRelative(destRel, it.name) }.toHashSet()
+            val finished = ArrayList<Triple<String, String, Long>>()    // 旧绝对路径 -> 新绝对路径（+ 条目 id）
+            var done = 0
+            try {
+                for (entry in targets) {
+                    val fresh = dao.byId(entry.id) ?: continue
+                    if (fresh.state != EntryState.ACTIVE) continue
+                    val rel = dedupeRelative(destRel, fresh.name, occupied)
+                    val newName = rel.substringAfterLast('/')
+                    val source = physicalFile(fresh)
+                    val dest = paths.fileOf(rel)
+                    if (!source.exists()) throw IllegalStateException("找不到要移动的文件：${fresh.name}")
+                    dest.parentFile?.mkdirs()
+                    if (!source.renameTo(dest)) throw IllegalStateException("移动失败：${fresh.name}")
+                    finished += Triple(source.absolutePath, dest.absolutePath, fresh.id)
+                    dao.update(fresh.copy(parentId = destParentId, relativePath = rel, name = newName))
+                    rebuildPaths(fresh.id, rel)
+                    occupied.add(rel)
+                    done++
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                // 把已经搬成功的按原路搬回去（倒着来，先搬的不被后搬的挡住）。
+                // 事务回滚会把索引恢复成开工前的样子，所以磁盘必须跟着回去，两边才又对得上。
+                val leftovers = ArrayList<String>()
+                finished.asReversed().forEach { (from, to, _) ->
+                    val current = File(to)
+                    if (current.exists() && !current.renameTo(File(from))) leftovers += current.name
+                }
+                val note = if (leftovers.isEmpty()) {
+                    "已把前 $done 项放回原位，整批没有移动"
+                } else {
+                    "有 ${leftovers.size} 项没能放回原位（${leftovers.joinToString("、")}），" +
+                        "请到设置页「重建索引（磁盘与数据库对账）」纠正"
+                }
+                throw IllegalStateException("${e.message}；$note", e)
             }
             MoveSummary(moved = done, carried = plan.carried.size, alreadyThere = plan.alreadyThere.size)
         }

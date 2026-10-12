@@ -270,10 +270,9 @@ fun BrowserHost(
             // "已经在这个目录里"要按选中项真正的父目录算（parentId 反查，不截 relativePath）：
             // 文件库 / 搜索 / 回收站页的 currentDir 是常量 ""，拿它当依据会把库根目录误判成非法目标，
             // 结果就是再也没法把文件移动到根目录。
+            // 合并顺序由 MovePlanner.pickerBlocks 统一管：硬禁层不能被"能穿过去"的那类覆盖。
             val ownDirs = selected.mapNotNull { vm.parentPathOf(it) }
-                .distinct()
-                .associateWith { PickerBlock("内容已经在这个目录里", canEnter = true) }
-            moveBlocked = vm.folderTargets.forbiddenForMove(sources) + ownDirs
+            moveBlocked = vm.folderTargets.pickerBlocksForMove(sources, ownDirs)
         }
     }
 

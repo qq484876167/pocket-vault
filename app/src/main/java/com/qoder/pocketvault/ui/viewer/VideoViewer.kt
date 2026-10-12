@@ -245,8 +245,10 @@ private fun VideoStage(
         val wantPlaying = playing
         runCatching { media.playbackParams = media.playbackParams.setSpeed(speed) }
             .onFailure {
-                vm.setPlaybackRate(1f)
-                rateNote = "这台机器的解码器不支持变速，已回到常速播放"
+                // 只把界面上这一档落回常速，不写偏好：一次瞬时异常不该替用户永久决定
+                // "这台手机不支持变速"
+                vm.fallBackToNormalRate()
+                rateNote = "刚才这次变速没被接受，已回到常速（偏好没改，下次还是你选的那档）"
             }
         runCatching {
             if (wantPlaying && !media.isPlaying) media.start()

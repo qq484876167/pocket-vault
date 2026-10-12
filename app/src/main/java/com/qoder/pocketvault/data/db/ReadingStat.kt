@@ -10,8 +10,8 @@ import androidx.room.Upsert
  *
  * [day] 用本地日期字符串（`2026-10-12`）而不是时间戳，是为了"按天聚合"这件事交给 SQL 的
  * GROUP BY 就够了，不用在 Kotlin 里按时区来回换算；跨零点自然落到下一天。
- * [blocks] 对小说是段落数、对 PDF 是页数、对视频用不上就填 0——一列三个用途，
- * 反正界面只会写成"推进了 N 处"。
+ * [blocks] 目前只有小说阅读器会写（推进的段落数）；PDF 只记时长、blocks 留 0，
+ * 界面上"推进了 N 处"那半句就会不显示。不是漏了，是刻意不把页码当成"读了多少"来吹。
  */
 @Entity(tableName = "reading_stats", primaryKeys = ["entryId", "day"])
 data class ReadingStat(

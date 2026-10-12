@@ -57,8 +57,16 @@ import com.qoder.pocketvault.data.db.PdfBookmark
  */
 val PdfInvertFilter: ColorFilter = ColorFilter.colorMatrix(ColorMatrix(ColorMatrices.INVERT))
 
-/** 缩略图的渲染宽度：只求"看得出这页长什么样"，大了既慢又占内存。 */
-private const val THUMB_WIDTH_PX = 220
+/**
+ * 缩略图的渲染宽度。
+ *
+ * **360 是 PdfDocument 渲染下限**（`targetWidthPx.coerceIn(360, 1600)`），写更小的数会被抬到 360，
+ * 所以这里必须按 360 记账：一张 360×509 的 ARGB_8888 约 0.7 MB，一屏 20 来格就是十几 MB，
+ * 会和正文大图共用同一份 LRU（键里带宽度，互不覆盖但会互相挤出去）。
+ * 实际表现：关掉总览回到正文，当前页多半要重画一次——预取 ±1 页的逻辑会立刻补上，
+ * 只是闪过一下白底。要真的省这份内存得给缩略图单独做一条渲染通道，这轮没做。
+ */
+private const val THUMB_WIDTH_PX = 360
 
 /**
  * 页面总览：一屏网格把所有页缩略图铺开，点哪页就跳过去。
@@ -125,7 +133,14 @@ private fun ThumbCell(
     onClick: () -> Unit,
 ) {
     var bitmap by remember(page) { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(page) { bitmap = runCatching { render(page, THUMB_WIDTH_PX) }.getOrNull() }
+    var failure by remember(page) { mutableStateOf<String?>(null) }
+    LaunchedEffect(page) {
+        val outcome = runCatching { render(page, THUMB_WIDTH_PX) }
+        bitmap = outcome.getOrNull()
+        // 渲染失败要说出来：以前画不出来就永远转圈，用户只会以为总览卡住了
+        failure = bitmap?.let { null }
+            ?: (outcome.exceptionOrNull()?.let { "${it.javaClass.simpleName}: ${it.message}" } ?: "这一页画不出来")
+    }
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             modifier = Modifier
@@ -138,13 +153,22 @@ private fun ThumbCell(
         ) {
             val image = bitmap
             when {
-                image == null -> CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
-                else -> Image(
+                image != null -> Image(
                     bitmap = image.asImageBitmap(),
                     contentDescription = "第 ${page + 1} 页",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit,
                 )
+
+                failure != null -> Text(
+                    "${page + 1} 页失败",
+                    color = Color.White.copy(alpha = 0.75f),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    modifier = Modifier.padding(4.dp),
+                )
+
+                else -> CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
             }
         }
         Spacer(Modifier.height(2.dp))
