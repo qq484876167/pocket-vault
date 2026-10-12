@@ -1,6 +1,7 @@
 package com.qoder.pocketvault.data
 
 import com.qoder.pocketvault.core.FileKind
+import com.qoder.pocketvault.core.MovePlanner
 import com.qoder.pocketvault.core.VaultPaths
 import com.qoder.pocketvault.core.VaultPrefs
 import com.qoder.pocketvault.core.dedupeRelative
@@ -49,6 +50,16 @@ data class FolderRow(
     val relativePath: String,
     val name: String,
     val childCount: Int,
+)
+
+/**
+ * 库内移动的结果。[carried] 是"随所在文件夹一起走"的项数，界面必须说出来，
+ * 否则用户会以为少搬了几个。[alreadyThere] 是本来就在目标目录里的项。
+ */
+data class MoveSummary(
+    val moved: Int,
+    val carried: Int,
+    val alreadyThere: Int,
 )
 
 /**
@@ -149,6 +160,17 @@ class VaultRepository(
     }
 
     suspend fun entryById(id: Long): VaultEntry? = withContext(Dispatchers.IO) { dao.byId(id) }
+
+    /**
+     * 某个目录条目的真实路径；条目不存在、已进回收站、或者根本不是目录时返回 null。
+     *
+     * 需要"某项在哪个目录里"的地方一律用它，别再拿 `relativePath` 截字符串——
+     * relativePath 是 parentId 链的缓存视图（见本类顶部约定），两者一旦不同步，
+     * 截出来的落点会把解压/复制的文件写到别处去。
+     */
+    suspend fun folderPathById(id: Long): String? = withContext(Dispatchers.IO) {
+        dao.byId(id)?.takeIf { it.state == EntryState.ACTIVE && it.isFolder }?.relativePath
+    }
 
     suspend fun entriesByIds(ids: List<Long>): List<VaultEntry> = withContext(Dispatchers.IO) {
         dao.byIds(ids)
@@ -308,22 +330,47 @@ class VaultRepository(
         }
     }
 
-    suspend fun move(ids: List<Long>, destDirRelativePath: String): Int = withContext(Dispatchers.IO) {
+    /**
+     * 库内移动。三条硬规矩（都是被真实坏数据逼出来的）：
+     *  1. 决策全部在 [MovePlanner] 里算完，**非法目标抛出时磁盘一点没动**；
+     *  2. 勾了父文件夹又勾它里面的子文件夹时，子项随父项走，不再单独 rename 一遍旧路径
+     *     （旧实现会抛异常，索引回滚而物理文件已经搬走，留下管不到的游离数据）；
+     *  3. 循环里每项都重新按 id 查当前状态与路径，不信任开工前那份快照。
+     */
+    suspend fun move(ids: List<Long>, destDirRelativePath: String): MoveSummary = withContext(Dispatchers.IO) {
         db.withTransaction {
-            val destParentId = ensureFolderPath(destDirRelativePath)
             val destRel = VaultPaths.normalizeRelative(destDirRelativePath)
-            val moved = dao.byIds(ids).filter { it.state == EntryState.ACTIVE && it.parentId != destParentId }
-            if (moved.isEmpty()) return@withTransaction 0
+            val requested = dao.byIds(ids).filter { it.state == EntryState.ACTIVE }
+            if (requested.isEmpty()) return@withTransaction MoveSummary(0, 0, 0)
+
+            // 目标目录此刻可能还不存在：不存在时它不可能在谁肚子里，路径检查仍然要跑。
+            val destId = if (destRel.isEmpty()) ROOT_ID else dao.byPath(destRel)?.id
+            // 祖先链一次查好再交给 MovePlanner： planner 是纯函数（探针直接在 JVM 上跑），
+            // 不能在里面挂 suspend 查询。
+            val chains = HashMap<Long, List<Long>>()
+            requested.forEach { chains[it.id] = ancestorChain(it.id) }
+            if (destId != null && destId != ROOT_ID) chains[destId] = ancestorChain(destId)
+            val plan = MovePlanner.plan(
+                selected = requested.map { MovePlanner.Node(it.id, it.parentId, it.relativePath, it.isFolder) },
+                destRelativePath = destRel,
+                destId = destId,
+                ancestorIds = { id -> chains[id].orEmpty() },
+            )
+            plan.illegal.firstOrNull()?.let { throw IllegalStateException(it) }
+
+            // 校验通过之后才允许建目录：非法目标不该在库里留下一个空文件夹。
+            val destParentId = ensureFolderPath(destRel)
             val occupied = dao.children(destParentId).map { joinRelative(destRel, it.name) }.toHashSet()
             var done = 0
-            for (entry in moved) {
-                if (entry.isFolder && isDescendantOfFolder(destRel, entry.relativePath)) {
-                    throw IllegalStateException("不能把文件夹移动到它自己里面")
-                }
+            for (node in plan.moveNow) {
+                val entry = dao.byId(node.id) ?: continue
+                if (entry.state != EntryState.ACTIVE) continue
+                if (entry.parentId == destParentId) continue    // 前面某一项把它一起带过来了
                 val rel = dedupeRelative(destRel, entry.name, occupied)
                 val newName = rel.substringAfterLast('/')
                 val source = physicalFile(entry)
                 val dest = paths.fileOf(rel)
+                if (!source.exists()) throw IllegalStateException("找不到要移动的文件：${entry.name}")
                 dest.parentFile?.mkdirs()
                 if (!source.renameTo(dest)) throw IllegalStateException("移动失败：${entry.name}")
                 dao.update(entry.copy(parentId = destParentId, relativePath = rel, name = newName))
@@ -331,8 +378,23 @@ class VaultRepository(
                 occupied.add(rel)
                 done++
             }
-            done
+            MoveSummary(moved = done, carried = plan.carried.size, alreadyThere = plan.alreadyThere.size)
         }
+    }
+
+    /**
+     * 某个条目从**父亲**开始向上的 id 链（不含自己，遇根或断链即止）。
+     * [MAX_TRAVERSAL] 是死循环保险：数据被改坏成 A→B→A 时不能把调用方挂死。
+     */
+    private suspend fun ancestorChain(id: Long): List<Long> {
+        val chain = ArrayList<Long>()
+        var guard = 0
+        var current = dao.byId(id)?.parentId
+        while (current != null && current != ROOT_ID && guard++ < MAX_TRAVERSAL) {
+            chain.add(current)
+            current = dao.byId(current)?.parentId
+        }
+        return chain
     }
 
     /** 复制一份到目标目录，磁盘与索引一起深拷贝。 */
@@ -576,13 +638,6 @@ class VaultRepository(
     }
 
     fun paths(): VaultPaths = paths
-
-    /** 目标目录是否位于该文件夹内部，防止把文件夹移动到自己里面。 */
-    private fun isDescendantOfFolder(candidateDestRel: String, folderRel: String): Boolean {
-        val dest = candidateDestRel.trim('/')
-        val folder = folderRel.trim('/')
-        return dest == folder || dest.startsWith("$folder/")
-    }
 
     private suspend fun stampSubtreeTrash(rootRowId: Long, viaId: Long, rootRel: String, now: Long) {
         val queue = ArrayDeque<Long>()

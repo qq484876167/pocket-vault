@@ -52,6 +52,7 @@ import com.qoder.pocketvault.ui.vm.ExtractTarget
 import com.qoder.pocketvault.ui.LocalSnackbar
 import com.qoder.pocketvault.ui.components.EntryList
 import com.qoder.pocketvault.ui.components.FolderPickerSheet
+import com.qoder.pocketvault.ui.components.PickerBlock
 import com.qoder.pocketvault.ui.components.SelectionAction
 import com.qoder.pocketvault.ui.components.SelectionBar
 import com.qoder.pocketvault.ui.components.SelectionMenuItem
@@ -257,17 +258,20 @@ fun BrowserHost(
         if (busy) BusyOverlay(true)
     }
 
-    // 移动文件夹时，它自己与所有后代目录都不能当目标：在导航过程中就标灰，
-    // 而不是等用户点了才由 repo.move() 抛异常。复制没有这个限制（复制到自己是产生副本）。
-    var moveBlocked by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    // 移动文件夹时，它自己与所有后代目录都不能当目标、也不能进去；
+    // 而"内容已经在这个目录里"的那一层**必须能穿过去**——不然在该目录里新建的子文件夹永远够不到。
+    // 真正动手前 [com.qoder.pocketvault.core.MovePlanner] 还会再判一次（那里连"父项带着子项一起走"一起算）。
+    var moveBlocked by remember { mutableStateOf<Map<String, PickerBlock>>(emptyMap()) }
     LaunchedEffect(sheetMode, selection, entries) {
         if (sheetMode == SheetMode.MOVE) {
             val selected = entries.filter { it.id in selection }
             val sources = selected.filter { it.isFolder }.map { it.relativePath }
-            // "已经在这个目录里"要按选中项真正的父目录算：文件库 / 搜索 / 回收站页的
-            // currentDir 是常量 ""，拿它当依据会把库根目录误判成非法目标，
+            // "已经在这个目录里"要按选中项真正的父目录算（parentId 反查，不截 relativePath）：
+            // 文件库 / 搜索 / 回收站页的 currentDir 是常量 ""，拿它当依据会把库根目录误判成非法目标，
             // 结果就是再也没法把文件移动到根目录。
-            val ownDirs = selected.map { parentDirOf(it) }.distinct().associateWith { "内容已经在这个目录里" }
+            val ownDirs = selected.mapNotNull { vm.parentPathOf(it) }
+                .distinct()
+                .associateWith { PickerBlock("内容已经在这个目录里", canEnter = true) }
             moveBlocked = vm.folderTargets.forbiddenForMove(sources) + ownDirs
         }
     }
@@ -399,10 +403,6 @@ private fun ImportMenuItem(label: String, icon: ImageVector, onClick: () -> Unit
         onClick = onClick,
     )
 }
-
-/** 条目所在的逻辑目录（根目录是空串）。 */
-private fun parentDirOf(entry: VaultEntry): String =
-    entry.relativePath.trim('/').substringBeforeLast('/', "")
 
 /** BrowseViewModel 的 currentDir 是 StateFlow，这里为对话框标题取快照。 */
 @Composable

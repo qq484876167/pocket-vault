@@ -169,18 +169,29 @@ data class FolderPickerPorts(
 )
 
 /**
+ * 一个目录在选择器里的禁用状态。
+ *
+ * **"不能当目的地"和"不能进去"是两件事**，以前混成一句文案，结果灰掉的行一律点不动：
+ * 用户想把四个文件移进同一个文件夹里新建的子文件夹时，父目录因为"内容已经在这个目录里"被标灰，
+ * 于是永远进不去，那个新建的子文件夹也就永远够不到（真实反馈）。
+ * 现在 [canEnter] 为真表示"浅灰：可以穿过去，只是不能在这里按确认"。
+ */
+data class PickerBlock(val reason: String, val canEnter: Boolean)
+
+/**
  * 移动 / 复制 / 解压的目标目录选择器：像系统文件管理器那样**逐层进入**。
  *
  * 一次只读当前这一层（含一次聚合查询拿到的子项数），不再把全库路径平铺出来。
- * [disabled] 是"不能选的原因表"：移动文件夹时它自己与所有后代都进不去，
- * 但复制与解压不受这个限制，所以由调用方决定传什么，组件不写死。
+ * [disabled] 是"不能选的原因表"：移动文件夹时它自己与所有后代既不能选也不能进，
+ * 而"内容已经在这个目录里"只是不能就地确认、仍然可以穿过去。
+ * 复制与解压不受这些限制，所以由调用方决定传什么，组件不写死。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FolderPickerSheet(
     ports: FolderPickerPorts,
     confirmLabel: String,
-    disabled: Map<String, String> = emptyMap(),
+    disabled: Map<String, PickerBlock> = emptyMap(),
     onDismiss: () -> Unit,
     onPick: (String) -> Unit,
 ) {
@@ -239,7 +250,12 @@ fun FolderPickerSheet(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     history.forEach { path ->
-                        FilterChip(path.ifEmpty { "文件库" }.replace("/", " › "), false) { jump(path) }
+                        FilterChip(path.ifEmpty { "文件库" }.replace("/", " › "), false) {
+                            // 历史里可能存着本次刚被禁掉的目录（例如正要移动的那个文件夹）：
+                            // 彻底禁止的不给穿，能穿过的照常进。
+                            val block = disabled[path]
+                            if (block != null && !block.canEnter) hint = block.reason else jump(path)
+                        }
                     }
                 }
             }
@@ -254,13 +270,15 @@ fun FolderPickerSheet(
             val pending = rows == null
             LazyColumn(modifier = Modifier.height(300.dp)) {
                 items(level, key = { it.relativePath }) { row ->
-                    val reason = disabled[row.relativePath]
+                    val block = disabled[row.relativePath]
+                    val canEnter = block == null || block.canEnter
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .alpha(if (reason == null) 1f else 0.45f)
+                            // 深灰 = 彻底禁止（连进都不给进）；浅灰 = 能进去、只是这一层不能放。
+                            .alpha(if (block == null) 1f else if (canEnter) 0.72f else 0.42f)
                             .then(
-                                if (reason == null) Modifier.clickable { jump(row.relativePath) } else Modifier,
+                                if (canEnter) Modifier.clickable { jump(row.relativePath) } else Modifier,
                             )
                             .padding(vertical = 11.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -279,16 +297,18 @@ fun FolderPickerSheet(
                                 maxLines = 1,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
-                            reason?.let {
+                            block?.let {
                                 Text(
-                                    it,
+                                    if (canEnter) "${it.reason}，可以进去选它的子文件夹" else it.reason,
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
+                                    // 能穿过去的只是"这里不能直接放"，不必用报错色吓人。
+                                    color = if (canEnter) MaterialTheme.colorScheme.onSurfaceVariant
+                                    else MaterialTheme.colorScheme.error,
                                 )
                             }
                         }
                         Text("${row.childCount} 项", style = MaterialTheme.typography.bodySmall)
-                        if (reason == null) Text("›", style = MaterialTheme.typography.bodyLarge)
+                        if (canEnter) Text("›", style = MaterialTheme.typography.bodyLarge)
                     }
                 }
                 if (pending) {
@@ -309,7 +329,11 @@ fun FolderPickerSheet(
             }
 
             Spacer(Modifier.height(6.dp))
-            if (creating) {
+            // 彻底禁止进入的那一层连"就地新建"都不给（新建完也没法用）；能穿过的层保留，
+            // 这样"在父目录里现建一个子文件夹再进去"一步到位。
+            val currentBlock = disabled[current]
+            val canUseCurrent = currentBlock == null || currentBlock.canEnter
+            if (creating && canUseCurrent) {
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
@@ -338,16 +362,17 @@ fun FolderPickerSheet(
                     ) { Text("创建") }
                 }
                 Spacer(Modifier.height(6.dp))
-            } else {
+            } else if (canUseCurrent) {
                 TextButton(onClick = { creating = true }) { Text("在此新建文件夹") }
             }
 
-            val blockedReason = disabled[current]
-            blockedReason?.let {
+            currentBlock?.let {
                 Text(
-                    "当前这一层不能选：$it",
+                    if (canUseCurrent) "这里不能直接放：${it.reason}。可以进去选它的子文件夹。"
+                    else "当前这一层不能选：${it.reason}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+                    color = if (canUseCurrent) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.error,
                 )
             }
             Spacer(Modifier.height(8.dp))
@@ -355,7 +380,7 @@ fun FolderPickerSheet(
                 VaultButton("取消", filled = false, onClick = onDismiss)
                 VaultButton(
                     confirmLabel,
-                    enabled = blockedReason == null && !pending,
+                    enabled = currentBlock == null && !pending,
                     onClick = { onPick(current) },
                 )
             }

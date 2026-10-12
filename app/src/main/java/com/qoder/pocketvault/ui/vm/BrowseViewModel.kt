@@ -120,7 +120,13 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
                 failures += "${archive.name}（取不到文件）"
                 continue
             }
-            val parent = archive.relativePath.trim('/').substringBeforeLast('/', "")
+            // 落点按 parentId 反查：relativePath 只是缓存视图，拿它截字符串会在数据不同步时
+            // 把解出来的文件写进错误的目录。查不到就跳过这一包并说明，绝不猜。
+            val parent = if (archive.parentId == ROOT_ID) "" else repo.folderPathById(archive.parentId)
+            if (parent == null) {
+                failures += "${archive.name}（所在目录已经找不到）"
+                continue
+            }
             val dest = if (target == ExtractTarget.SPECIFIC) {
                 VaultPaths.normalizeRelative(specific ?: parent)
             } else {
@@ -174,10 +180,22 @@ abstract class BrowseViewModel(protected val graph: AppGraph) : ViewModel() {
         null
     }
 
+    /**
+     * 某个条目真正所在的目录（根目录返回 ""，查不到返回 null）。
+     * 目录选择器用它标出"内容已经在这个目录里"的那些层，不拿 relativePath 截字符串。
+     */
+    suspend fun parentPathOf(entry: VaultEntry): String? =
+        if (entry.parentId == ROOT_ID) "" else repo.folderPathById(entry.parentId)
+
     fun moveToSelected(destDir: String) = runAction {
-        val count = repo.move(selectedIds(), destDir)
-        if (count > 0) folderTargets.remember(destDir)
-        "已移动 $count 项"
+        val summary = repo.move(selectedIds(), destDir)
+        if (summary.moved > 0) folderTargets.remember(destDir)
+        buildString {
+            append("已移动 ${summary.moved} 项")
+            // 随父目录一起走的项必须说清楚，否则看起来像漏搬了。
+            if (summary.carried > 0) append("，另有 ${summary.carried} 项随所在文件夹一起移动")
+            if (summary.alreadyThere > 0) append("，${summary.alreadyThere} 项本来就在这个目录里")
+        }
     }
 
     fun copyToSelected(destDir: String) = runAction {

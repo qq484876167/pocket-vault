@@ -1,9 +1,11 @@
 package com.qoder.pocketvault.ui.vm
 
+import com.qoder.pocketvault.core.MovePlanner
 import com.qoder.pocketvault.core.VaultPrefs
 import com.qoder.pocketvault.data.FolderRow
 import com.qoder.pocketvault.data.VaultRepository
 import com.qoder.pocketvault.ui.components.FolderPickerPorts
+import com.qoder.pocketvault.ui.components.PickerBlock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -66,25 +68,25 @@ class FolderTargetBook(
 
     /**
      * 移动这些文件夹时哪些目录不能当目标：它们自己 + 它们的所有后代。
-     * 复制不需要（复制到自己是产生一份副本）。
+     * 复制不需要（复制到自己是产生一份副本，但那条另有隐患，见 README 的已知限制）。
+     *
+     * 这一类**连进去都不给**（canEnter = false）：里面的每一层都是非法目标，穿过它没有意义。
+     * 与"内容已经在这个目录里"不同——那一类只是不能就地确认，必须能穿过去，
+     * 否则用户在父目录里新建的子文件夹就永远够不到。
      *
      * 一次把全库目录路径读出来做前缀判断，不逐层递归查库；
-     * [VaultRepository.move] 里那条"不能把文件夹移动到它自己里面"仍然保留作兜底。
+     * [VaultRepository.move] 里由 [com.qoder.pocketvault.core.MovePlanner] 再兜一道底。
      */
-    suspend fun forbiddenForMove(sources: List<String>): Map<String, String> {
+    suspend fun forbiddenForMove(sources: List<String>): Map<String, PickerBlock> {
         val folders = sources.filter { it.isNotEmpty() }.distinct()
         if (folders.isEmpty()) return emptyMap()
         val all = runCatching { repo.folderPaths() }.getOrDefault(emptyList())
-        val blocked = LinkedHashMap<String, String>()
-        folders.forEach { source ->
-            if (source == "") return@forEach
-            all.forEach { candidate ->
-                when {
-                    candidate == source -> blocked[candidate] = "不能移动到它自己里面（这正是要移动的文件夹）"
-                    candidate.startsWith("$source/") -> blocked[candidate] = "不能移动到它自己里面（它在要移动的文件夹里面）"
-                }
+        return MovePlanner.subtreeOf(folders, all)
+            .associate { rule ->
+                rule.path to PickerBlock(
+                    if (rule.isSourceItself) "这正是要移动的文件夹" else "它在要移动的文件夹里面",
+                    canEnter = false,
+                )
             }
-        }
-        return blocked
     }
 }

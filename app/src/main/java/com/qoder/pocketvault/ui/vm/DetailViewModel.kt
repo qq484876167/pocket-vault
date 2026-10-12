@@ -130,6 +130,7 @@ class DetailViewModel(
                 _message.value = "该项目已不存在"
                 return@launch
             }
+            refreshContainingFolder(entry)
             _preview.value = runCatching { graph.preview.load(entry) }.getOrDefault(PreviewContent.None)
             val file = physicalFile()
             if (entry.kind == FileKind.ARCHIVE && file != null) {
@@ -142,9 +143,21 @@ class DetailViewModel(
 
     fun physicalFile(): File? = _entry.value?.let { runCatching { repo.physicalFile(it) }.getOrNull() }
 
-    /** 包所在目录（解压默认落在这里面，或建同名新文件夹）。 */
-    fun containingFolder(): String =
-        _entry.value?.relativePath?.trim('/')?.substringBeforeLast('/', "").orEmpty()
+    /**
+     * 包所在目录（解压默认落在这里面，或建同名新文件夹）。
+     *
+     * 以前是拿 `relativePath` 截最后一段猜出来的。relativePath 只是 parentId 链的**缓存视图**，
+     * 一旦两者不同步（历史上移动出过错就留这种数据），猜出来的落点会把解出来的文件放到别处去。
+     * 现在按 parentId 反查、随详情页加载刷新；查不到就返回 null 让调用方明确报错，
+     * 绝不退回到"猜一个路径"。
+     */
+    fun containingFolder(): String? = containingFolderCache
+
+    private var containingFolderCache: String? = null
+
+    private suspend fun refreshContainingFolder(entry: VaultEntry) {
+        containingFolderCache = if (entry.parentId == ROOT_ID) "" else repo.folderPathById(entry.parentId)
+    }
 
     /**
      * 一次开包同时"探能力 + 验密码 + 列条目"，结论按五种状态分别渲染。
@@ -217,6 +230,11 @@ class DetailViewModel(
     fun planExtract(target: ExtractTarget, specificFolder: String?, onReady: (ExtractPlan) -> Unit) {
         val file = physicalFile() ?: return
         val parent = containingFolder()
+        if (parent == null) {
+            // 宁可停下也不要猜一个落点：猜错会把解出来的文件写进别的目录，事后更难找。
+            _message.value = "压缩包所在的目录已经找不到，请返回文件库刷新后再试"
+            return
+        }
         val dest = when (target) {
             ExtractTarget.CURRENT_FOLDER, ExtractTarget.NEW_FOLDER -> parent
             ExtractTarget.SPECIFIC -> VaultPaths.normalizeRelative(specificFolder ?: parent).ifEmpty { parent }
@@ -252,6 +270,10 @@ class DetailViewModel(
         if (_busy.value) return
         val file = physicalFile() ?: return
         val parent = containingFolder()
+        if (parent == null) {
+            _message.value = "压缩包所在的目录已经找不到，请返回文件库刷新后再试"
+            return
+        }
         // 占位必须在第一个挂起点之前，否则极快的两次点击都能通过上面的 _busy 检查
         _busy.value = true
         viewModelScope.launch {
@@ -374,11 +396,16 @@ class DetailViewModel(
     fun extractEntry(item: ArchiveItem) {
         if (_busy.value) return
         val file = physicalFile() ?: return
+        val dest = containingFolder()
+        if (dest == null) {
+            _message.value = "压缩包所在的目录已经找不到，请返回文件库刷新后再试"
+            return
+        }
         val password = operationPassword()
         _busy.value = true
         viewModelScope.launch {
             val outcome = runCatching {
-                graph.archives.extractEntryToVault(file, item, containingFolder(), password)
+                graph.archives.extractEntryToVault(file, item, dest, password)
             }.onFailure { it.rethrowIfCancelled() }
             _busy.value = false
             outcome.fold(
